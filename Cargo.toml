@@ -1,11 +1,6 @@
 [workspace]
-# `crates/*` once the first crate lands. A glob that matches nothing is a hard error in
-# cargo, so until then this has to be the explicit list, or a fresh clone will not build.
-#
-# Add `default-members = ["crates/mock-resend"]` with the server crate. Until then xtask
-# is the only binary in the workspace, so a bare `cargo run` reaches it instead of the
-# server the README documents.
-members = ["xtask"]
+members = ["crates/*", "xtask"]
+default-members = ["crates/mock-resend"]
 resolver = "3"
 
 [workspace.package]
@@ -15,10 +10,40 @@ rust-version = "1.100"
 license = "MIT"
 repository = "https://github.com/rapture-sh/mock-resend"
 
-# `[workspace.dependencies]` goes here, and each crate joins it in the pull request that
-# first uses it. Cargo warns about a workspace dependency nothing depends on, and this
-# repo does not ship warnings, so the settled stack is named in AGENTS.md rather than
-# pinned here ahead of the code.
+# Each dependency joins this table in the pull request that first uses it, and cargo
+# warns about one nothing depends on, so this list is exactly what the code compiles
+# against today. The settled stack is named in AGENTS.md.
+[workspace.dependencies]
+mock-resend-api = { path = "crates/mock-resend-api", version = "0.1.0" }
+mock-resend-core = { path = "crates/mock-resend-core", version = "0.1.0" }
+mock-resend-testkit = { path = "crates/mock-resend-testkit", version = "0.1.0" }
+
+async-trait = "0.1.92"
+axum = "0.8.9"
+base64 = "0.22.1"
+bytes = "1.12.1"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+clap = { version = "4.6.7", features = ["derive", "env"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "signal",
+    "sync",
+    "time",
+] }
+tower = { version = "0.5.2", features = ["util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+uuid = { version = "1.29.2", features = ["v4"] }
+
+# Dev-only, for the conformance suite. No TLS is involved in talking to a local
+# instance, so `rustls-tls` is picked over the default `native-tls` purely to keep
+# OpenSSL off the build on every platform.
+resend-rs = { version = "0.36.1", default-features = false, features = ["rustls-tls"] }
 
 [profile.release]
 lto = "fat"

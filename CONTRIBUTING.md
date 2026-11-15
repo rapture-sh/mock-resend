@@ -67,8 +67,9 @@ Rust is pinned in `rust-toolchain.toml`; rustup picks it up automatically.
 cargo run
 ```
 
-That starts the API on `:9100` and SMTP on `:1025`, writing captured mail to `./data`.
-Pass `--in-memory` if you would rather it left nothing behind.
+That starts the API on `:9100`. The SMTP listener and the disk backend have not landed
+yet, so captured mail is held in memory and goes away with the process; `--data` and
+`--in-memory` arrive with the `.eml` writer.
 
 ## Adding an endpoint
 
