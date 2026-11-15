@@ -51,8 +51,18 @@ steps literally instead.
    safely, never by joining onto a `PathBuf`. The other half of this rule is outbound:
    an attachment `path` and a webhook endpoint are both URLs the caller chose, so
    fetching one is a server-side request forgery on the developer's machine. Outbound
-   requests happen in one place, through the one guarded client, and that client refuses
-   loopback, link-local and private ranges unless explicitly allowed.
+   requests happen in one place, through the one guarded client in
+   `mock-resend-webhooks`.
+
+   That guard is **inverted relative to a normal SSRF policy**, and deliberately so. A
+   normal guard blocks private addresses and allows the internet. Here every legitimate
+   webhook endpoint is a handler on `localhost` or a neighbouring container, and the
+   dangerous case is a typo posting captured mail out to a stranger. So loopback and the
+   private ranges are allowed, the public internet is refused unless
+   `--allow-public-webhooks` is set, and link-local is refused either way because
+   `169.254.169.254` is where a cloud metadata service lives and CI is where this runs.
+   Redirects are not followed: a `302` is a second URL the caller did not choose and the
+   guard never saw.
 6. **Start-up time and binary size are features.** They are most of why this exists.
    Prefer the standard library and the settled dependencies over adding another one.
 7. **Never block the async runtime.** No synchronous file I/O and no long CPU work in a

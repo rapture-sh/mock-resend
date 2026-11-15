@@ -14,6 +14,12 @@ publish = false
 mock-resend-core.workspace = true
 mock-resend-testkit.workspace = true
 
+# A real webhook handler on a real port, and an independent verifier for the signature
+# so a wrong scheme cannot pass by agreeing with itself.
+axum.workspace = true
+base64.workspace = true
 chrono.workspace = true
+hmac.workspace = true
 resend-rs.workspace = true
+sha2.workspace = true
 tokio.workspace = true

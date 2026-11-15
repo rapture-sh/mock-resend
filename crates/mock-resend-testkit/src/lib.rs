@@ -10,9 +10,13 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
+use std::time::Duration as StdDuration;
+
 use chrono::{DateTime, Duration, Utc};
 use mock_resend_core::{Clock, Engine, MemoryStore, TestClock, Transition};
+use mock_resend_webhooks::{Config as WebhookConfig, Policy, Sender};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
 /// A running instance, on a port of the operating system's choosing.
@@ -25,6 +29,7 @@ pub struct MockResend {
     engine: Engine,
     clock: Arc<TestClock>,
     server: JoinHandle<()>,
+    webhooks: JoinHandle<()>,
 }
 
 /// What to turn on for an instance.
@@ -38,6 +43,10 @@ pub struct Options {
     /// How long after being sent a message is delivered, or `None` to leave it at
     /// `sent` until the test advances it.
     pub delivery_delay: Option<Duration>,
+    /// What the webhook sender is allowed to reach.
+    pub webhook_policy: Policy,
+    /// How many times a failing webhook delivery is retried.
+    pub webhook_retries: u32,
 }
 
 impl Options {
@@ -60,6 +69,20 @@ impl Options {
         self.delivery_delay = Some(delay);
         self
     }
+
+    /// Lets the webhook sender reach public addresses too.
+    #[must_use]
+    pub fn allow_public_webhooks(mut self) -> Self {
+        self.webhook_policy = Policy::AllowPublic;
+        self
+    }
+
+    /// Retries a failing webhook delivery this many times.
+    #[must_use]
+    pub fn webhook_retries(mut self, retries: u32) -> Self {
+        self.webhook_retries = retries;
+        self
+    }
 }
 
 impl MockResend {
@@ -80,9 +103,25 @@ impl MockResend {
     pub async fn start_with(options: Options) -> io::Result<Self> {
         let clock = Arc::new(TestClock::new());
         let shared: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+
+        let (transitions_tx, transitions_rx) = mpsc::unbounded_channel();
+
         let engine = Engine::new(Arc::new(MemoryStore::new()), shared)
             .with_rate_limit(options.rate_limit)
-            .with_delivery_delay(options.delivery_delay);
+            .with_delivery_delay(options.delivery_delay)
+            .with_transition_sink(transitions_tx);
+
+        // No backoff at all: a test that waits on a retry delay is a test that is slow
+        // for no reason, and the retry itself is what is being checked.
+        let sender = Sender::new(WebhookConfig {
+            policy: options.webhook_policy,
+            retries: options.webhook_retries,
+            backoff: StdDuration::ZERO,
+            ..WebhookConfig::default()
+        })
+        .map_err(|error| io::Error::other(error.to_string()))?;
+
+        let webhooks = tokio::spawn(sender.run(engine.clone(), transitions_rx));
 
         // Port zero: the operating system picks one that is free, so two tests running
         // at the same time cannot collide.
@@ -101,6 +140,7 @@ impl MockResend {
             engine,
             clock,
             server,
+            webhooks,
         })
     }
 
@@ -168,5 +208,6 @@ impl MockResend {
 impl Drop for MockResend {
     fn drop(&mut self) {
         self.server.abort();
+        self.webhooks.abort();
     }
 }

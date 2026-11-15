@@ -10,6 +10,7 @@ repository.workspace = true
 [dependencies]
 mock-resend-api.workspace = true
 mock-resend-core.workspace = true
+mock-resend-webhooks.workspace = true
 
 axum.workspace = true
 chrono.workspace = true

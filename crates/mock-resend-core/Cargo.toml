@@ -9,9 +9,15 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+# For the `whsec_` signing secret only. A real Svix verifier base64-decodes the part
+# after the prefix, so the encoding is part of Resend's data model rather than anything
+# to do with HTTP or JSON.
+base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
+# `sync` only, for the channel transitions are announced on. No sockets here.
+tokio = { workspace = true, default-features = false, features = ["sync"] }
 uuid.workspace = true
 
 [dev-dependencies]

@@ -40,6 +40,15 @@ pub struct Cli {
     #[arg(long, env = "MOCK_RESEND_DELIVERY_DELAY")]
     pub delivery_delay: Option<u32>,
 
+    /// Let webhooks reach public internet addresses.
+    ///
+    /// Off by default. Every legitimate handler is on localhost or a neighbouring
+    /// container, and the dangerous case is a typo posting captured mail to a stranger.
+    /// Link-local addresses stay refused either way, because that is where a cloud
+    /// metadata service lives.
+    #[arg(long, env = "MOCK_RESEND_ALLOW_PUBLIC_WEBHOOKS")]
+    pub allow_public_webhooks: bool,
+
     /// Log level: `error`, `warn`, `info`, `debug` or `trace`.
     #[arg(long, env = "MOCK_RESEND_LOG", default_value = "info")]
     pub log: String,
@@ -90,6 +99,16 @@ mod command_line {
 
         assert_eq!(cli.rate_limit, Some(10));
         assert_eq!(cli.delivery_delay, Some(250));
+    }
+
+    #[test]
+    fn should_keep_webhooks_local_only_by_default() {
+        assert!(!Cli::parse_from(["mock-resend"]).allow_public_webhooks);
+    }
+
+    #[test]
+    fn should_accept_the_public_webhook_opt_in() {
+        assert!(Cli::parse_from(["mock-resend", "--allow-public-webhooks"]).allow_public_webhooks);
     }
 
     #[test]

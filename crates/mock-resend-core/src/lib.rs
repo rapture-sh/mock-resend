@@ -19,6 +19,7 @@ pub mod mailbox;
 pub mod model;
 pub mod schedule;
 pub mod store;
+pub mod webhook;
 
 pub use engine::{BatchFailure, BatchOutcome, BatchValidation, Engine, MAX_BATCH, Transition};
 pub use error::{Error, Result};
@@ -31,3 +32,4 @@ pub use mailbox::SendEmail;
 pub use model::{ApiKey, Attachment, AttachmentSource, EmailId, Message, Tag};
 pub use schedule::{Clock, SystemClock, TestClock};
 pub use store::{Store, memory::MemoryStore};
+pub use webhook::{SigningSecret, WebhookEndpoint, WebhookId, Webhooks};

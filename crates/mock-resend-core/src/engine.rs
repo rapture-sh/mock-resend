@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
+use tokio::sync::mpsc::UnboundedSender;
 
 use crate::error::{Error, Result};
 use crate::events::EmailEvent;
@@ -16,6 +17,7 @@ use crate::mailbox::SendEmail;
 use crate::model::{ApiKey, EmailId, Message};
 use crate::schedule::{Clock, SystemClock};
 use crate::store::{Store, memory::MemoryStore};
+use crate::webhook::Webhooks;
 
 /// The mock-resend engine.
 ///
@@ -28,6 +30,12 @@ pub struct Engine {
     idempotency: Arc<Idempotency>,
     faults: Arc<Faults>,
     rate_limiter: Arc<RateLimiter>,
+    webhooks: Arc<Webhooks>,
+    /// Where transitions are announced, if anything is listening.
+    ///
+    /// A channel rather than a direct call, because the thing that wants them makes
+    /// outbound requests and this crate must not know that outbound requests exist.
+    transitions: Option<UnboundedSender<Transition>>,
     /// How long after being handed off a message is delivered. `None` turns automatic
     /// delivery off, which is the default.
     delivery_delay: Option<Duration>,
@@ -49,8 +57,21 @@ impl Engine {
             idempotency: Arc::new(Idempotency::new()),
             faults: Arc::new(Faults::new()),
             rate_limiter: Arc::new(RateLimiter::new(None)),
+            webhooks: Arc::new(Webhooks::new()),
+            transitions: None,
             delivery_delay: None,
         }
+    }
+
+    /// Announces every delivery event on `sender`.
+    ///
+    /// `mock-resend-webhooks` passes its own receiver's sender here. Without one,
+    /// transitions still happen and are still reported to the caller; nothing is
+    /// delivered anywhere.
+    #[must_use]
+    pub fn with_transition_sink(mut self, sender: UnboundedSender<Transition>) -> Self {
+        self.transitions = Some(sender);
+        self
     }
 
     /// Limits every key to `limit` requests a second.
@@ -194,6 +215,16 @@ impl Engine {
         };
 
         self.store.put(message).await?;
+
+        // A freshly captured message has arrived at its first event, which is the
+        // `email.sent` or `email.scheduled` a handler expects to receive.
+        self.announce(Transition {
+            key: key.clone(),
+            id,
+            from: EmailEvent::Queued,
+            to: last_event,
+            at: now,
+        });
 
         Ok(id)
     }
@@ -439,6 +470,7 @@ impl Engine {
             };
 
             self.store.put(message).await?;
+            self.announce(transition.clone());
             transitions.push(transition);
         }
 
@@ -515,6 +547,23 @@ impl Engine {
         &self.faults
     }
 
+    /// The webhook endpoint registry, for the admin API to configure.
+    #[must_use]
+    pub fn webhooks(&self) -> &Webhooks {
+        &self.webhooks
+    }
+
+    /// Announces a transition, if anything is listening.
+    ///
+    /// A closed or absent channel is not an error. Nothing the caller asked for depends
+    /// on a webhook being delivered, and failing a send because a listener went away
+    /// would make webhook delivery a hidden dependency of capturing mail.
+    fn announce(&self, transition: Transition) {
+        if let Some(sender) = &self.transitions {
+            let _delivered = sender.send(transition);
+        }
+    }
+
     /// Moves a captured message to `next`, if the lifecycle allows it.
     ///
     /// This is how the admin API drives a bounce or an open on demand. The engine owns
@@ -544,13 +593,16 @@ impl Engine {
 
         self.store.put(message).await?;
 
-        Ok(Transition {
+        let transition = Transition {
             key: key.clone(),
             id: *id,
             from,
             to: next,
             at,
-        })
+        };
+        self.announce(transition.clone());
+
+        Ok(transition)
     }
 
     /// Discards everything under `key`, or the whole store when `key` is `None`.
@@ -566,6 +618,7 @@ impl Engine {
         self.idempotency.reset(key)?;
         self.faults.reset(key)?;
         self.rate_limiter.reset(key)?;
+        self.webhooks.reset(key)?;
         self.store.reset(key).await
     }
 }

@@ -43,11 +43,15 @@ or that turns a test fixture into a foothold on the developer's machine:
   outbound connection to a recipient's mail server, or otherwise causes a real
   message to reach a real inbox, is the most serious bug this project can have.
   Everything else on this list is less important than that.
-- **A request that makes the server fetch a URL of the caller's choosing.** An
-  attachment may carry a `path`, and a webhook endpoint is a caller-supplied URL.
-  Either one reaching into a private network, a cloud metadata endpoint or the
-  loopback interface is a server-side request forgery on the developer's machine.
-  Report it even if it needs a flag to be on.
+- **A request that makes the server reach a URL of the caller's choosing, past the
+  guard.** An attachment may carry a `path`, and a webhook endpoint is a
+  caller-supplied URL. Both go through one guarded client, whose policy is deliberately
+  inverted: loopback and private ranges are reachable because that is where a test
+  handler lives, the public internet is refused unless `--allow-public-webhooks` is
+  set, and link-local is refused either way because `169.254.169.254` is a cloud
+  metadata service and CI is where this runs. Anything that gets past that — an
+  IPv4-mapped metadata address, a followed redirect, a second client added elsewhere in
+  the workspace — is a report, even if it needs a flag to be on.
 - **Path traversal through a filename.** Attachment filenames and message ids are
   arbitrary caller-controlled strings, and `../`, absolute paths, Windows drive
   prefixes and encoded separators are all things a client will send. Any value that

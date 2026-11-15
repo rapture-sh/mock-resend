@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use clap::Parser as _;
 use mock_resend_core::Engine;
+use mock_resend_webhooks::{Config as WebhookConfig, Policy, Sender};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -40,9 +42,26 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
         .delivery_delay
         .map(|millis| chrono::Duration::milliseconds(i64::from(millis)));
 
+    let (transitions_tx, transitions_rx) = mpsc::unbounded_channel();
+
     let engine = Engine::in_memory()
         .with_rate_limit(cli.rate_limit)
-        .with_delivery_delay(delivery_delay);
+        .with_delivery_delay(delivery_delay)
+        .with_transition_sink(transitions_tx);
+
+    let policy = if cli.allow_public_webhooks {
+        Policy::AllowPublic
+    } else {
+        Policy::LocalOnly
+    };
+
+    let sender = Sender::new(WebhookConfig {
+        policy,
+        ..WebhookConfig::default()
+    })
+    .map_err(|error| format!("could not build the webhook client: {error}"))?;
+
+    let webhooks = tokio::spawn(sender.run(engine.clone(), transitions_rx));
 
     let address = SocketAddr::new(cli.host, cli.port);
 
@@ -69,12 +88,16 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(delay) = cli.delivery_delay {
         tracing::info!("delivering captured mail {delay}ms after it is sent");
     }
+    if cli.allow_public_webhooks {
+        tracing::warn!("webhooks may reach public addresses; captured mail can leave this machine");
+    }
 
     axum::serve(listener, mock_resend_api::router(engine))
         .with_graceful_shutdown(shutdown())
         .await?;
 
     ticker.abort();
+    webhooks.abort();
 
     Ok(())
 }

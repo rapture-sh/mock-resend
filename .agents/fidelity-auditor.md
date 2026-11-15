@@ -34,8 +34,11 @@ Check for:
    correctness promise, not a nicety.
 6. **Unguarded outbound requests.** An attachment `path` and a webhook endpoint are URLs
    the caller chose. Check that every outbound request goes through the one guarded
-   client, and that the guard still rejects loopback, link-local and private ranges
-   unless explicitly allowed. A new fetch added "temporarily" in a handler is a finding.
+   client in `mock-resend-webhooks`, that the guard still refuses link-local addresses
+   under every policy and public addresses unless `--allow-public-webhooks` is set, that
+   IPv4-mapped IPv6 addresses are unwrapped before being judged, and that redirects are
+   still not followed. A new client or fetch anywhere else, including one added
+   "temporarily" in a handler, is a finding on its own.
 7. **Caller-supplied strings used as paths.** Attachment filenames and message ids are
    arbitrary, and `../`, an absolute path, a Windows drive prefix and encoded separators
    are all things a client will send. Check that every one goes through the resolver in

@@ -95,6 +95,7 @@ Configuration
 | `--log <level>` | `info` | `error`, `warn`, `info`, `debug`, `trace` | ✅ |
 | `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers | ✅ |
 | `--delivery-delay <ms>` | off | Deliver a captured message this long after it is sent | ✅ |
+| `--allow-public-webhooks` | off | Let webhooks reach public internet addresses | ✅ |
 | `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written | planned |
 | `--in-memory` | off | Keep everything in RAM and discard it on exit | planned |
 | `--smtp-port` | `1025` | SMTP listener port | planned |
@@ -169,6 +170,7 @@ Supported surface
 | Protocol | `Idempotency-Key`, with the 24 hour replay window | ✅ |
 | Protocol | `--rate-limit` with the `ratelimit-*` headers | ✅ |
 | Faults | Per-key error injection and delivery outcomes | ✅ |
+| Webhooks | Svix-signed delivery to per-key endpoints, with retries | ✅ |
 | SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
 | Admin | `POST /_admin/reset`, list captured mail, advance an event, inject a fault | planned |
 
@@ -234,9 +236,26 @@ key.
 | `email.opened`, `email.clicked` | On demand, so engagement handling is testable |
 
 Webhooks are signed the way Resend signs them — `svix-id`, `svix-timestamp` and
-`svix-signature` — so your real verification code runs unmodified instead of being stubbed
-out in tests. That is what a mock that only stores mail cannot give you, and it is usually
-where the bugs are.
+`svix-signature`, HMAC-SHA256 over `{id}.{timestamp}.{body}` with the base64 part of the
+`whsec_` secret as the key — so your real verification code runs unmodified instead of
+being stubbed out in tests. That is what a mock that only stores mail cannot give you, and
+it is usually where the bugs are. A retry reuses the `svix-id`, so a handler that
+deduplicates can be tested for it.
+
+Two notes on the payload, both of which look like bugs and are not. Resend reports `tags`
+as an **object** in a webhook while the send request takes an array of `{name, value}`.
+And a webhook's `created_at` carries milliseconds with a `Z` while `GET /emails/{id}`
+reports microseconds with a `+00:00` offset. Both are matched here.
+
+There is no `email.canceled`: Resend's event type list does not have one, so cancelling a
+scheduled send changes what `GET /emails/{id}` reports without notifying a handler.
+
+**Where webhooks may be delivered is deliberately inverted** from a normal SSRF policy.
+Loopback and private ranges are reachable, because that is where your handler is. Public
+internet addresses are refused unless you pass `--allow-public-webhooks`, because a typo
+should not post captured mail to a stranger. Link-local addresses are refused either way:
+`169.254.169.254` is a cloud metadata service and CI is where this runs. Redirects are not
+followed.
 
 Scheduled sends do not need you to wait: the engine's clock can be advanced through the
 admin API, so a test for "this email goes out in 24 hours" takes a millisecond.

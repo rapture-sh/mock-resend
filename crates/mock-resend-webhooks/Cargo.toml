@@ -1,0 +1,27 @@
+[package]
+name = "mock-resend-webhooks"
+description = "Outbound webhook delivery for mock-resend. The only crate that makes an outbound request."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mock-resend-core.workspace = true
+
+base64.workspace = true
+chrono.workspace = true
+hmac.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
