@@ -1,0 +1,10 @@
+# The build artifacts are the largest thing in the tree by far, and the image builds
+# its own.
+/target
+
+# Nothing in the image needs the history, the CI config or the editor's opinions.
+/.git
+/.github
+/.claude
+/.agents
+/data

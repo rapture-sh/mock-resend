@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 mod cli;
+mod healthcheck;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -27,6 +28,18 @@ async fn main() -> ExitCode {
         .unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // Checks and exits rather than serving. `--healthcheck` is exclusive, so there is
+    // nothing else on the command line to honour.
+    if cli.healthcheck {
+        return match healthcheck::run(cli.port) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(reason) => {
+                tracing::error!("{reason}");
+                ExitCode::FAILURE
+            }
+        };
+    }
 
     match serve(&cli).await {
         Ok(()) => ExitCode::SUCCESS,

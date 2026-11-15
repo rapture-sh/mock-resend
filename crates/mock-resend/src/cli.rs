@@ -72,6 +72,17 @@ pub struct Cli {
     #[arg(long, env = "MOCK_RESEND_ALLOW_PUBLIC_WEBHOOKS")]
     pub allow_public_webhooks: bool,
 
+    /// Check whether a server is already running on `--port`, then exit.
+    ///
+    /// What the container's `HEALTHCHECK` runs, so the image needs no `curl` or `wget`.
+    /// Exits `0` when the admin API answers and non-zero otherwise.
+    ///
+    /// Deliberately not exclusive: it has to read `--port`, or the equivalent
+    /// `MOCK_RESEND_PORT`, to know where to look. Everything else on the command line is
+    /// ignored, because it checks and exits rather than serving.
+    #[arg(long)]
+    pub healthcheck: bool,
+
     /// Log level: `error`, `warn`, `info`, `debug` or `trace`.
     #[arg(long, env = "MOCK_RESEND_LOG", default_value = "info")]
     pub log: String,
@@ -142,6 +153,21 @@ mod command_line {
 
         assert_eq!(cli.rate_limit, Some(10));
         assert_eq!(cli.delivery_delay, Some(250));
+    }
+
+    #[test]
+    fn should_accept_the_healthcheck_flag_on_its_own() {
+        assert!(Cli::parse_from(["mock-resend", "--healthcheck"]).healthcheck);
+    }
+
+    #[test]
+    fn should_let_the_healthcheck_flag_read_the_port() {
+        // The container's HEALTHCHECK has to be able to find the listener, so the port
+        // options still apply.
+        let cli = Cli::parse_from(["mock-resend", "--healthcheck", "--port", "9200"]);
+
+        assert!(cli.healthcheck);
+        assert_eq!(cli.port, 9200);
     }
 
     #[test]

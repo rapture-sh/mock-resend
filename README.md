@@ -41,6 +41,8 @@ Resend API on `:9100`, SMTP on `:1025`. Captured mail lives in the volume mounte
 `/data`, so it survives a container restart and you can open the `.eml` files from the
 host.
 
+A [compose.yaml](compose.yaml) is in the repository, ready to copy:
+
 ```yaml
 services:
   email:
@@ -50,10 +52,17 @@ services:
       - "1025:1025"
     volumes:
       - mock-resend-data:/data
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/mock-resend", "--healthcheck"]
+      interval: 10s
 
 volumes:
   mock-resend-data:
 ```
+
+The image is a statically linked binary on Alpine, about 22MB, and it checks its own
+health so nothing else has to be installed in it. It runs as a non-root user, and `/data`
+is owned by that user.
 
 Run without a volume and the container keeps captured mail in its own writable layer,
 which disappears with the container. For a suite that wants nothing on disk at all, pass
@@ -336,7 +345,12 @@ cargo run
 cargo xtask dist
 ```
 
-Layout, conventions, testing and style are in [AGENTS.md](AGENTS.md).
+```bash
+cargo xtask docker
+```
+
+Layout, conventions, testing and style are in [AGENTS.md](AGENTS.md). Publishing is in
+[RELEASING.md](RELEASING.md).
 
 
 Contributions

@@ -63,14 +63,13 @@ fn dist() -> Result<(), String> {
     run("cargo", &["build", "--release"], &workspace_root())
 }
 
-/// The image is built out alongside the server, so a missing `Dockerfile` is a notice
-/// rather than a failure.
 fn docker() -> Result<(), String> {
     let root = workspace_root();
 
+    // The `Dockerfile` is part of the repository now, so its absence means a broken
+    // checkout rather than a phase that has not landed yet.
     if !root.join("Dockerfile").exists() {
-        println!("note: Dockerfile not found, skipping the image build");
-        return Ok(());
+        return Err("no Dockerfile at the workspace root".to_owned());
     }
 
     run(
