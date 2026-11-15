@@ -15,9 +15,14 @@ async-trait.workspace = true
 base64.workspace = true
 bytes.workspace = true
 chrono.workspace = true
+mail-builder.workspace = true
+mail-parser.workspace = true
 thiserror.workspace = true
 # `sync` only, for the channel transitions are announced on. No sockets here.
-tokio = { workspace = true, default-features = false, features = ["sync"] }
+# `sync` for the channel transitions are announced on, `fs` for the disk backend.
+# No sockets here: the engine never opens one.
+tokio = { workspace = true, default-features = false, features = ["fs", "sync"] }
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

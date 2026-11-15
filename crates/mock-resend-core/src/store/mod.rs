@@ -3,6 +3,7 @@
 //! Every operation has to work on both backends, so new storage behaviour is a method
 //! on [`Store`] rather than a branch on the backend type.
 
+pub mod disk;
 pub mod memory;
 
 use std::path::{Path, PathBuf};

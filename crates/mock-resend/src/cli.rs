@@ -4,6 +4,7 @@
 //! usually easier in a compose file.
 
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
@@ -23,6 +24,20 @@ pub struct Cli {
     /// Port for the Resend HTTP API.
     #[arg(long, env = "MOCK_RESEND_PORT", default_value_t = 9100)]
     pub port: u16,
+
+    /// Where captured mail is written, as one `.eml` per message.
+    ///
+    /// Defaults to `/data` inside the published image and `./data` elsewhere, so a
+    /// mounted volume keeps captured mail across a container restart and the files can
+    /// be opened in a mail client.
+    #[arg(long, env = "MOCK_RESEND_DATA")]
+    pub data: Option<PathBuf>,
+
+    /// Keep everything in RAM and discard it on exit.
+    ///
+    /// Nothing is written anywhere. For a suite that wants no files at all.
+    #[arg(long, env = "MOCK_RESEND_IN_MEMORY", conflicts_with = "data")]
+    pub in_memory: bool,
 
     /// Requests per second per API key. Off by default.
     ///
@@ -52,6 +67,26 @@ pub struct Cli {
     /// Log level: `error`, `warn`, `info`, `debug` or `trace`.
     #[arg(long, env = "MOCK_RESEND_LOG", default_value = "info")]
     pub log: String,
+}
+
+impl Cli {
+    /// Where captured mail should be written, or `None` for in-memory.
+    ///
+    /// `/data` inside the published image, `./data` elsewhere. The image sets
+    /// `MOCK_RESEND_DATA`, so this default only has to be right for someone running
+    /// `cargo run`.
+    #[must_use]
+    pub fn data_directory(&self) -> Option<PathBuf> {
+        if self.in_memory {
+            return None;
+        }
+
+        Some(
+            self.data
+                .clone()
+                .unwrap_or_else(|| Path::new("./data").to_path_buf()),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +134,41 @@ mod command_line {
 
         assert_eq!(cli.rate_limit, Some(10));
         assert_eq!(cli.delivery_delay, Some(250));
+    }
+
+    #[test]
+    fn should_default_to_writing_captured_mail_to_disk() {
+        let cli = Cli::parse_from(["mock-resend"]);
+
+        assert_eq!(
+            cli.data_directory(),
+            Some(std::path::Path::new("./data").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn should_write_nothing_when_asked_for_memory_only() {
+        let cli = Cli::parse_from(["mock-resend", "--in-memory"]);
+
+        assert_eq!(cli.data_directory(), None);
+    }
+
+    #[test]
+    fn should_accept_a_data_directory() {
+        let cli = Cli::parse_from(["mock-resend", "--data", "/var/mail"]);
+
+        assert_eq!(
+            cli.data_directory(),
+            Some(std::path::Path::new("/var/mail").to_path_buf())
+        );
+    }
+
+    #[test]
+    fn should_refuse_a_data_directory_and_in_memory_together() {
+        // One of them is a lie, and which one is not obvious from the command line.
+        assert!(
+            Cli::try_parse_from(["mock-resend", "--data", "/var/mail", "--in-memory"]).is_err()
+        );
     }
 
     #[test]

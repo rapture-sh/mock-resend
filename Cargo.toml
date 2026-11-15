@@ -28,6 +28,12 @@ chrono = { version = "0.4.45", default-features = false, features = ["std", "clo
 clap = { version = "4.6.7", features = ["derive", "env"] }
 # Svix-compatible webhook signatures.
 hmac = "0.12.1"
+# The `.eml` on disk and the SMTP listener's input. 0.4/0.11 rather than the current
+# majors: 2.x/1.x pull a wasm-bindgen and futures tree in even with default features
+# off, and start-up time and binary size are features here. Neither crate can send
+# anything — that is also why `lettre`, which bundles an SMTP client, is not used.
+mail-builder = "0.4.4"
+mail-parser = "0.11.9"
 # The outbound webhook client. `rustls` rather than the platform stack so the build is
 # the same everywhere; no TLS is involved in reaching a local handler anyway.
 reqwest = { version = "0.12.28", default-features = false, features = [

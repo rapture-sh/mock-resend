@@ -27,10 +27,9 @@ for parallel suites and fault injection. Kywi now consumes it like everyone else
 a finished product. The admin API will break without ceremony until `0.1.0`.
 
 Working today: the whole `/emails` surface, the delivery event lifecycle with signed
-webhooks, idempotency keys, per-key fault injection and rate limiting, and the `/_admin`
-API. Still to come: the SMTP listener, writing captured mail to disk as `.eml`, and the
-embedded console. Everything is held in memory for now. The tables below mark what is
-landed and what is not.
+webhooks, idempotency keys, per-key fault injection and rate limiting, the `/_admin` API,
+and captured mail written to disk as `.eml`. Still to come: the SMTP listener and the
+embedded console. The tables below mark what is landed and what is not.
 
 
 Running it
@@ -60,8 +59,13 @@ volumes:
 
 Run without a volume and the container keeps captured mail in its own writable layer,
 which disappears with the container. For a suite that wants nothing on disk at all, pass
-`--in-memory`. Until the disk backend lands, in-memory is the only mode and the volume is
-unused — see [Configuration](#configuration).
+`--in-memory`.
+
+Captured mail is written as one `.eml` per message, under a directory per API key. That
+is the record, not a side artifact: open a file in any mail client and you see exactly
+what your code produced, headers and attachments included. The parts a mail message has
+no header for — which key owns it, where it is in the delivery lifecycle, its tags — ride
+along in `X-Mock-Resend-*` headers, which are stripped on the way back in.
 
 
 Pointing a client at it
@@ -97,18 +101,14 @@ Configuration
 | `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers | ✅ |
 | `--delivery-delay <ms>` | off | Deliver a captured message this long after it is sent | ✅ |
 | `--allow-public-webhooks` | off | Let webhooks reach public internet addresses | ✅ |
-| `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written | planned |
-| `--in-memory` | off | Keep everything in RAM and discard it on exit | planned |
+| `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written | ✅ |
+| `--in-memory` | off | Keep everything in RAM and discard it on exit | ✅ |
 | `--smtp-port` | `1025` | SMTP listener port | planned |
 | `--no-smtp` | off | Disable the SMTP listener | planned |
 
 Every flag has a `MOCK_RESEND_`-prefixed environment variable equivalent, which is usually
 easier in a compose file. `RUST_LOG` overrides `--log` with a full filter directive if you
 want per-module control.
-
-Captured mail is currently held in memory only, so a restart loses it and the `--data`
-flag does not exist yet: the disk backend writes an `.eml`, so it lands with the MIME
-writer rather than ahead of it.
 
 Rate limiting is **off by default** even though real Resend limits you to 10 requests per
 second. A test suite that trips a rate limit it did not ask for is a flaky test suite; a
@@ -172,6 +172,7 @@ Supported surface
 | Protocol | `--rate-limit` with the `ratelimit-*` headers | ✅ |
 | Faults | Per-key error injection and delivery outcomes | ✅ |
 | Webhooks | Svix-signed delivery to per-key endpoints, with retries | ✅ |
+| Storage | One `.eml` per message under `--data`, reloaded on restart | ✅ |
 | SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
 | Admin | The whole `/_admin` surface below | ✅ |
 | Console | The embedded web UI | planned |

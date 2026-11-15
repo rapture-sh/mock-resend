@@ -6,10 +6,11 @@ mod cli;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser as _;
-use mock_resend_core::Engine;
+use mock_resend_core::{DiskStore, Engine, MemoryStore, Store, SystemClock};
 use mock_resend_webhooks::{Config as WebhookConfig, Policy, Sender};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -44,7 +45,24 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let (transitions_tx, transitions_rx) = mpsc::unbounded_channel();
 
-    let engine = Engine::in_memory()
+    let store: Arc<dyn Store> = match cli.data_directory() {
+        Some(directory) => {
+            let store = DiskStore::open(&directory)
+                .await
+                .map_err(|error| format!("could not open the data directory: {error}"))?;
+
+            tracing::info!("writing captured mail to {}", store.root().display());
+
+            Arc::new(store)
+        }
+        None => {
+            tracing::info!("keeping captured mail in memory only");
+
+            Arc::new(MemoryStore::new())
+        }
+    };
+
+    let engine = Engine::new(store, Arc::new(SystemClock::new()))
         .with_rate_limit(cli.rate_limit)
         .with_delivery_delay(delivery_delay)
         .with_transition_sink(transitions_tx);
@@ -79,9 +97,7 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("mock-resend listening on http://{bound}");
     tracing::info!("point a Resend client at it with RESEND_BASE_URL=http://{bound}");
     tracing::info!("admin API on http://{bound}/_admin, unauthenticated");
-    tracing::warn!(
-        "captured mail is held in memory and goes away with this process; it is never delivered"
-    );
+    tracing::warn!("nothing here is authenticated, and no mail is ever delivered");
 
     if let Some(limit) = cli.rate_limit {
         tracing::info!("rate limiting at {limit} requests per second per API key");
