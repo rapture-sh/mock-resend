@@ -1,0 +1,54 @@
+name: Feature request
+description: A missing endpoint, event or behaviour on the mailing path
+labels: ["enhancement"]
+body:
+  - type: input
+    id: feature
+    attributes:
+      label: The endpoint or feature
+      placeholder: email.delivery_delayed with a configurable delay
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What you are trying to test
+      description: >
+        The concrete situation you are in. "My webhook handler branches on this
+        event and I cannot produce it" is a much better case than "Resend has
+        it". This is also the argument that moves something across the scope
+        line, so spend a sentence on it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Expected behaviour
+      description: >
+        What real Resend does, ideally with a link to the API reference. For
+        error cases, the status code and the error `name` matter.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope check
+      options:
+        - label: >
+            This is on the mailing path — sending, retrieving, scheduling,
+            delivery events or webhooks — and not domains, API key management,
+            audiences, contacts, broadcasts, topics, suppression or the inbox
+            surface
+          required: true
+        - label: >
+            This does not require mock-resend to deliver mail to a real
+            recipient
+          required: true
+
+  - type: checkboxes
+    id: build-it
+    attributes:
+      label: Would you build it?
+      options:
+        - label: I'd like to implement this myself
