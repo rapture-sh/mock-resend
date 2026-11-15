@@ -92,7 +92,7 @@ impl fmt::Display for ApiKey {
 }
 
 /// Where an attachment's bytes come from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AttachmentSource {
     /// Inline bytes, decoded from the request.
     Content(Bytes),
@@ -104,7 +104,7 @@ pub enum AttachmentSource {
 }
 
 /// A file attached to a message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Attachment {
     /// The caller-supplied filename. An arbitrary string, never treated as a path.
     pub filename: Option<String>,
@@ -117,7 +117,7 @@ pub struct Attachment {
 }
 
 /// A name and value pair attached to a message for reporting.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Tag {
     /// ASCII letters, digits, underscores and dashes, at most 256 characters.
     pub name: String,

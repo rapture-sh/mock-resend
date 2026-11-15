@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, body::Bytes};
-use mock_resend_core::{BatchValidation, EmailId, Engine};
+use mock_resend_core::{BatchValidation, EmailId, Engine, IdempotencyKey};
 
 use crate::auth::AuthenticatedKey;
 use crate::error::ApiError;
@@ -18,6 +18,26 @@ use crate::wire::emails::{
 
 /// The header Resend reads to choose a batch's validation mode.
 const BATCH_VALIDATION_HEADER: &str = "x-batch-validation";
+
+/// The header that makes a send replayable.
+const IDEMPOTENCY_HEADER: &str = "idempotency-key";
+
+/// Parses `Idempotency-Key`, if the caller sent one.
+///
+/// An absent header is `None` rather than an error: idempotency is opt-in. A present
+/// but unusable one is `invalid_idempotency_key`, because silently ignoring it would
+/// let a caller believe a retry was deduplicated when it was not.
+fn idempotency_key(headers: &HeaderMap) -> Result<Option<IdempotencyKey>, ApiError> {
+    let Some(value) = headers.get(IDEMPOTENCY_HEADER) else {
+        return Ok(None);
+    };
+
+    let value = value
+        .to_str()
+        .map_err(|_| ApiError::from(mock_resend_core::Error::InvalidIdempotencyKey))?;
+
+    Ok(Some(IdempotencyKey::parse(value)?))
+}
 
 /// `POST /emails`
 ///
@@ -30,15 +50,18 @@ const BATCH_VALIDATION_HEADER: &str = "x-batch-validation";
 pub async fn send_email(
     State(engine): State<Engine>,
     AuthenticatedKey(key): AuthenticatedKey,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    let idempotency = idempotency_key(&headers)?;
+
     // The body is taken as bytes and parsed here rather than through `Json<T>`, so that
     // a malformed body produces a Resend error body instead of the framework's own
     // rejection, which no SDK can deserialise.
     let request: SendEmailRequest = parse_body(&body)?;
 
     let id = engine
-        .send_email(&key, request.into_engine_request()?)
+        .send_email_idempotent(&key, request.into_engine_request()?, idempotency.as_ref())
         .await?;
 
     // An id and the key prefix. Never a subject, a recipient or a body: captured mail is
@@ -70,6 +93,8 @@ pub async fn send_batch(
             .and_then(|value| value.to_str().ok()),
     );
 
+    let idempotency = idempotency_key(&headers)?;
+
     // A body that will not convert at all fails the whole call whatever the mode: a
     // shape error is not a per-entry validation failure, and permissive mode is about
     // the latter.
@@ -78,7 +103,9 @@ pub async fn send_batch(
         engine_requests.push(request.into_engine_request()?);
     }
 
-    let outcome = engine.send_batch(&key, engine_requests, validation).await?;
+    let outcome = engine
+        .send_batch_idempotent(&key, engine_requests, validation, idempotency.as_ref())
+        .await?;
 
     tracing::info!(
         captured = outcome.ids.len(),

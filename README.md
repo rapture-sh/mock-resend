@@ -158,7 +158,8 @@ Supported surface
 | Manage | `GET /emails/{id}` | ✅ |
 | Manage | `PATCH /emails/{id}`, `POST /emails/{id}/cancel` | ✅ |
 | Protocol | `Bearer` auth, per-key isolation | ✅ |
-| Protocol | `Idempotency-Key`, `ratelimit-*` headers | planned |
+| Protocol | `Idempotency-Key`, with the 24 hour replay window | ✅ |
+| Protocol | `ratelimit-*` headers | planned |
 | SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
 | Admin | `POST /_admin/reset`, list captured mail, advance an event, inject a fault | planned |
 
@@ -171,10 +172,18 @@ with `html` and `text`, and the string-or-array forms of `to`, `cc`, `bcc` and
 Batches honour `x-batch-validation`: `strict`, the default, captures nothing if any entry
 is invalid, and `permissive` captures the valid ones and reports the rest by index.
 
-Errors use Resend's own `name` and status pairings — `validation_error` (400),
-`missing_api_key` (401), `not_found` (404), `method_not_allowed` (405),
-`missing_required_field`, `invalid_attachment` and `invalid_parameter` (422),
-`application_error` (500) — in the `{"statusCode", "message", "name"}` body a real SDK
+`Idempotency-Key` works on both send endpoints. A retry with the same key and the same
+payload returns the original id without capturing a second message; the same key with a
+different payload is `invalid_idempotent_request` (409), because that is a caller bug
+rather than a retry. Records expire after 24 hours of the instance's clock, so a test can
+advance past the window instead of waiting it out. A request that was *rejected* does not
+burn its key: fix the payload, retry with the same key.
+
+Errors use Resend's own `name` and status pairings — `validation_error` and
+`invalid_idempotency_key` (400), `missing_api_key` (401), `not_found` (404),
+`method_not_allowed` (405), `invalid_idempotent_request` and
+`concurrent_idempotent_requests` (409), `missing_required_field`, `invalid_attachment`
+and `invalid_parameter` (422), `application_error` (500) — in the `{"statusCode", "message", "name"}` body a real SDK
 deserialises, so code that branches on an error name can be tested against them. Note
 that every response is JSON, 404 and 405 included: the Rust SDK reports an error body it
 cannot parse as a transport failure rather than as the Resend error it was.

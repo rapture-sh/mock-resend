@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result};
 use crate::events::EmailEvent;
+use crate::idempotency::{Begin, Idempotency, IdempotencyKey, Outcome as IdempotentOutcome};
 use crate::mailbox::SendEmail;
 use crate::model::{ApiKey, EmailId, Message};
 use crate::schedule::{Clock, SystemClock};
@@ -21,6 +22,7 @@ use crate::store::{Store, memory::MemoryStore};
 pub struct Engine {
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
+    idempotency: Arc<Idempotency>,
 }
 
 impl Engine {
@@ -33,7 +35,11 @@ impl Engine {
     /// An engine over a given store and clock.
     #[must_use]
     pub fn new(store: Arc<dyn Store>, clock: Arc<dyn Clock>) -> Self {
-        Self { store, clock }
+        Self {
+            store,
+            clock,
+            idempotency: Arc::new(Idempotency::new()),
+        }
     }
 
     /// The engine's current time.
@@ -54,6 +60,70 @@ impl Engine {
     /// Whatever [`SendEmail::validate`] rejects, or [`Error::Store`] if the backend
     /// fails.
     pub async fn send_email(&self, key: &ApiKey, request: SendEmail) -> Result<EmailId> {
+        self.send_email_idempotent(key, request, None).await
+    }
+
+    /// Validates and captures a message, honouring an `Idempotency-Key`.
+    ///
+    /// A retry with the same key and the same payload returns the original id without
+    /// capturing a second message. A retry with the same key and a different payload is
+    /// [`Error::InvalidIdempotentRequest`], because the caller is reusing a key.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`SendEmail::validate`] rejects, the idempotency errors above, or
+    /// [`Error::Store`] if the backend fails.
+    pub async fn send_email_idempotent(
+        &self,
+        key: &ApiKey,
+        request: SendEmail,
+        idempotency_key: Option<&IdempotencyKey>,
+    ) -> Result<EmailId> {
+        let Some(idempotency_key) = idempotency_key else {
+            return self.capture(key, request).await;
+        };
+
+        let fingerprint = request.fingerprint();
+        let now = self.clock.now();
+
+        match self
+            .idempotency
+            .begin(key, idempotency_key, fingerprint, now)?
+        {
+            Begin::Replay(IdempotentOutcome::Email(id)) => return Ok(id),
+            // A key used for a batch cannot be replayed as a single send. Resend treats
+            // a mismatched payload as a conflict, and a different endpoint is the most
+            // mismatched payload there is.
+            Begin::Replay(IdempotentOutcome::Batch(_)) => {
+                return Err(Error::InvalidIdempotentRequest);
+            }
+            Begin::Proceed => {}
+        }
+
+        match self.capture(key, request).await {
+            Ok(id) => {
+                self.idempotency.complete(
+                    key,
+                    idempotency_key,
+                    fingerprint,
+                    IdempotentOutcome::Email(id),
+                    now,
+                )?;
+
+                Ok(id)
+            }
+            Err(error) => {
+                // A rejected request is not remembered, so the caller can fix the
+                // payload and retry under the same key.
+                self.idempotency.abandon(key, idempotency_key)?;
+
+                Err(error)
+            }
+        }
+    }
+
+    /// Validates and stores one message, with no idempotency involved.
+    async fn capture(&self, key: &ApiKey, request: SendEmail) -> Result<EmailId> {
         request.validate()?;
 
         let now = self.clock.now();
@@ -138,6 +208,70 @@ impl Engine {
         requests: Vec<SendEmail>,
         validation: BatchValidation,
     ) -> Result<BatchOutcome> {
+        self.send_batch_idempotent(key, requests, validation, None)
+            .await
+    }
+
+    /// Captures a batch, honouring an `Idempotency-Key`.
+    ///
+    /// The fingerprint covers the whole batch, so a retry has to repeat every entry in
+    /// the same order to replay rather than capture again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::send_batch`], plus the idempotency errors.
+    pub async fn send_batch_idempotent(
+        &self,
+        key: &ApiKey,
+        requests: Vec<SendEmail>,
+        validation: BatchValidation,
+        idempotency_key: Option<&IdempotencyKey>,
+    ) -> Result<BatchOutcome> {
+        let Some(idempotency_key) = idempotency_key else {
+            return self.capture_batch(key, requests, validation).await;
+        };
+
+        let fingerprint = crate::idempotency::fingerprint_of(&requests);
+        let now = self.clock.now();
+
+        match self
+            .idempotency
+            .begin(key, idempotency_key, fingerprint, now)?
+        {
+            Begin::Replay(IdempotentOutcome::Batch(outcome)) => return Ok(outcome),
+            Begin::Replay(IdempotentOutcome::Email(_)) => {
+                return Err(Error::InvalidIdempotentRequest);
+            }
+            Begin::Proceed => {}
+        }
+
+        match self.capture_batch(key, requests, validation).await {
+            Ok(outcome) => {
+                self.idempotency.complete(
+                    key,
+                    idempotency_key,
+                    fingerprint,
+                    IdempotentOutcome::Batch(outcome.clone()),
+                    now,
+                )?;
+
+                Ok(outcome)
+            }
+            Err(error) => {
+                self.idempotency.abandon(key, idempotency_key)?;
+
+                Err(error)
+            }
+        }
+    }
+
+    /// Captures a batch, with no idempotency involved.
+    async fn capture_batch(
+        &self,
+        key: &ApiKey,
+        requests: Vec<SendEmail>,
+        validation: BatchValidation,
+    ) -> Result<BatchOutcome> {
         if requests.is_empty() {
             return Err(Error::validation(
                 "A batch must contain at least one email.",
@@ -175,7 +309,7 @@ impl Engine {
                 continue;
             }
 
-            ids.push(self.send_email(key, request).await?);
+            ids.push(self.capture(key, request).await?);
         }
 
         Ok(BatchOutcome { ids, failures })
@@ -314,6 +448,10 @@ impl Engine {
     ///
     /// [`Error::Store`] if the backend fails.
     pub async fn reset(&self, key: Option<&ApiKey>) -> Result<()> {
+        // The idempotency register goes too. A key whose mail was wiped but whose replay
+        // records survived would answer the next identical send with an id that no
+        // longer resolves.
+        self.idempotency.reset(key)?;
         self.store.reset(key).await
     }
 }
@@ -1283,6 +1421,313 @@ mod advance_event {
                 .expect("it is there")
                 .last_event,
             EmailEvent::Complained
+        );
+    }
+}
+
+#[cfg(test)]
+mod idempotent_sends {
+    use std::sync::Arc;
+
+    use chrono::Duration;
+
+    use super::{BatchValidation, Engine};
+    use crate::error::Error;
+    use crate::idempotency::{IdempotencyKey, WINDOW_HOURS};
+    use crate::mailbox::SendEmail;
+    use crate::model::ApiKey;
+    use crate::schedule::{Clock, TestClock};
+    use crate::store::memory::MemoryStore;
+
+    fn engine() -> (Engine, Arc<TestClock>) {
+        let clock = Arc::new(TestClock::new());
+        let shared: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+
+        (Engine::new(Arc::new(MemoryStore::new()), shared), clock)
+    }
+
+    fn key(name: &str) -> ApiKey {
+        ApiKey::parse(name).expect("the test key is re_-prefixed")
+    }
+
+    fn idempotency_key() -> IdempotencyKey {
+        IdempotencyKey::parse("order-1234").expect("valid")
+    }
+
+    fn request(subject: &str) -> SendEmail {
+        let mut request = SendEmail::new(
+            "Acme <onboarding@example.com>",
+            vec!["delivered@example.org".to_owned()],
+            subject,
+        );
+        request.text = Some("It works".to_owned());
+        request
+    }
+
+    #[tokio::test]
+    async fn should_capture_only_once_for_a_repeated_idempotency_key() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_capture_once_for_a_repeated_key");
+        let idempotency = idempotency_key();
+
+        let first = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured");
+        let second = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("replayed");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            engine.list_emails(&key).await.expect("list").len(),
+            1,
+            "a replay must not capture a second message"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_capture_twice_without_an_idempotency_key() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_capture_twice_without_a_key");
+
+        let first = engine
+            .send_email_idempotent(&key, request("Hello"), None)
+            .await
+            .expect("captured");
+        let second = engine
+            .send_email_idempotent(&key, request("Hello"), None)
+            .await
+            .expect("captured");
+
+        assert_ne!(first, second);
+        assert_eq!(engine.list_emails(&key).await.expect("list").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn should_reject_a_reused_key_with_a_different_payload() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_reject_a_reused_key_different_payload");
+        let idempotency = idempotency_key();
+
+        let _first = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured");
+
+        let error = engine
+            .send_email_idempotent(&key, request("Something else"), Some(&idempotency))
+            .await
+            .expect_err("the payload changed");
+
+        assert!(matches!(error, Error::InvalidIdempotentRequest));
+    }
+
+    #[tokio::test]
+    async fn should_not_capture_anything_when_a_reused_key_is_rejected() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_not_capture_on_a_rejected_reuse");
+        let idempotency = idempotency_key();
+
+        let _first = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured");
+        let _rejected = engine
+            .send_email_idempotent(&key, request("Different"), Some(&idempotency))
+            .await;
+
+        assert_eq!(engine.list_emails(&key).await.expect("list").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn should_capture_again_once_the_window_has_passed() {
+        let (engine, clock) = engine();
+        let key = key("re_should_capture_again_after_the_window");
+        let idempotency = idempotency_key();
+
+        let first = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured");
+
+        clock.advance_secs(Duration::hours(WINDOW_HOURS).num_seconds());
+
+        let second = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("the record has expired");
+
+        assert_ne!(first, second);
+        assert_eq!(engine.list_emails(&key).await.expect("list").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn should_let_a_retry_proceed_after_the_first_attempt_was_invalid() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_let_a_retry_proceed_after_invalid");
+        let idempotency = idempotency_key();
+
+        let _rejected = engine
+            .send_email_idempotent(&key, SendEmail::default(), Some(&idempotency))
+            .await
+            .expect_err("an empty request is rejected");
+
+        assert!(
+            engine
+                .send_email_idempotent(&key, request("Fixed"), Some(&idempotency))
+                .await
+                .is_ok(),
+            "a rejected request must not burn the key"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_keep_one_idempotency_key_separate_across_api_keys() {
+        let (engine, _clock) = engine();
+        let mine = key("re_should_keep_idempotency_separate_sends_mine");
+        let theirs = key("re_should_keep_idempotency_separate_sends_theirs");
+        let idempotency = idempotency_key();
+
+        let first = engine
+            .send_email_idempotent(&mine, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured");
+        let second = engine
+            .send_email_idempotent(&theirs, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured under a different namespace");
+
+        assert_ne!(first, second);
+    }
+
+    #[tokio::test]
+    async fn should_ignore_header_order_when_comparing_payloads() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_ignore_header_order_in_payloads");
+        let idempotency = idempotency_key();
+
+        let mut first = request("Hello");
+        let _a = first.headers.insert("X-A".to_owned(), "1".to_owned());
+        let _b = first.headers.insert("X-B".to_owned(), "2".to_owned());
+
+        let mut second = request("Hello");
+        let _b2 = second.headers.insert("X-B".to_owned(), "2".to_owned());
+        let _a2 = second.headers.insert("X-A".to_owned(), "1".to_owned());
+
+        let original = engine
+            .send_email_idempotent(&key, first, Some(&idempotency))
+            .await
+            .expect("captured");
+        let replayed = engine
+            .send_email_idempotent(&key, second, Some(&idempotency))
+            .await
+            .expect("the same headers in another order are the same payload");
+
+        assert_eq!(original, replayed);
+    }
+
+    #[tokio::test]
+    async fn should_replay_a_whole_batch_for_a_repeated_key() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_replay_a_whole_batch");
+        let idempotency = idempotency_key();
+
+        let batch = vec![request("one"), request("two")];
+
+        let first = engine
+            .send_batch_idempotent(
+                &key,
+                batch.clone(),
+                BatchValidation::Strict,
+                Some(&idempotency),
+            )
+            .await
+            .expect("captured");
+        let second = engine
+            .send_batch_idempotent(&key, batch, BatchValidation::Strict, Some(&idempotency))
+            .await
+            .expect("replayed");
+
+        assert_eq!(first.ids, second.ids);
+        assert_eq!(engine.list_emails(&key).await.expect("list").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn should_reject_a_batch_key_reused_for_a_single_send() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_reject_a_batch_key_on_a_single_send");
+        let idempotency = idempotency_key();
+
+        let _batch = engine
+            .send_batch_idempotent(
+                &key,
+                vec![request("one")],
+                BatchValidation::Strict,
+                Some(&idempotency),
+            )
+            .await
+            .expect("captured");
+
+        assert!(matches!(
+            engine
+                .send_email_idempotent(&key, request("one"), Some(&idempotency))
+                .await,
+            Err(Error::InvalidIdempotentRequest)
+        ));
+    }
+
+    #[tokio::test]
+    async fn should_reject_a_batch_retry_whose_entries_changed_order() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_reject_a_reordered_batch_retry");
+        let idempotency = idempotency_key();
+
+        let _first = engine
+            .send_batch_idempotent(
+                &key,
+                vec![request("one"), request("two")],
+                BatchValidation::Strict,
+                Some(&idempotency),
+            )
+            .await
+            .expect("captured");
+
+        assert!(matches!(
+            engine
+                .send_batch_idempotent(
+                    &key,
+                    vec![request("two"), request("one")],
+                    BatchValidation::Strict,
+                    Some(&idempotency),
+                )
+                .await,
+            Err(Error::InvalidIdempotentRequest)
+        ));
+    }
+
+    #[tokio::test]
+    async fn should_forget_replay_records_when_the_key_is_reset() {
+        let (engine, _clock) = engine();
+        let key = key("re_should_forget_replays_on_reset");
+        let idempotency = idempotency_key();
+
+        let first = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured");
+
+        engine.reset(Some(&key)).await.expect("reset");
+
+        let second = engine
+            .send_email_idempotent(&key, request("Hello"), Some(&idempotency))
+            .await
+            .expect("captured again");
+
+        assert_ne!(
+            first, second,
+            "replaying an id whose message was wiped would hand back a dangling id"
         );
     }
 }

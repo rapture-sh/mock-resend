@@ -54,6 +54,18 @@ pub enum Error {
     #[error("Missing API key in the authorization header.")]
     MissingApiKey,
 
+    /// The `Idempotency-Key` header was outside the 1 to 256 character range.
+    #[error("The key must be between 1-256 chars.")]
+    InvalidIdempotencyKey,
+
+    /// The same idempotency key is already in flight.
+    #[error("Same idempotency key used while original request is still in progress.")]
+    ConcurrentIdempotentRequests,
+
+    /// The same idempotency key was used with a different payload.
+    #[error("Same idempotency key used with a different request payload.")]
+    InvalidIdempotentRequest,
+
     /// The storage backend failed.
     ///
     /// Carries a string rather than the source error so that the variant stays the same

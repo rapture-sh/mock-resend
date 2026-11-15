@@ -107,6 +107,17 @@ impl From<EngineError> for ApiError {
             }
             EngineError::NotFound => (StatusCode::NOT_FOUND, "not_found"),
             EngineError::MissingApiKey => (StatusCode::UNAUTHORIZED, "missing_api_key"),
+            // 400, not 422: Resend groups a bad idempotency key with the bad-request
+            // errors rather than the unprocessable-entity ones.
+            EngineError::InvalidIdempotencyKey => {
+                (StatusCode::BAD_REQUEST, "invalid_idempotency_key")
+            }
+            EngineError::ConcurrentIdempotentRequests => {
+                (StatusCode::CONFLICT, "concurrent_idempotent_requests")
+            }
+            EngineError::InvalidIdempotentRequest => {
+                (StatusCode::CONFLICT, "invalid_idempotent_request")
+            }
             // A storage failure is a bug here, not something the caller did.
             EngineError::Store(_) => (StatusCode::INTERNAL_SERVER_ERROR, "application_error"),
         };
@@ -163,6 +174,21 @@ mod api_error {
                 "invalid_parameter",
             ),
             (EngineError::NotFound, StatusCode::NOT_FOUND, "not_found"),
+            (
+                EngineError::InvalidIdempotencyKey,
+                StatusCode::BAD_REQUEST,
+                "invalid_idempotency_key",
+            ),
+            (
+                EngineError::ConcurrentIdempotentRequests,
+                StatusCode::CONFLICT,
+                "concurrent_idempotent_requests",
+            ),
+            (
+                EngineError::InvalidIdempotentRequest,
+                StatusCode::CONFLICT,
+                "invalid_idempotent_request",
+            ),
             (
                 EngineError::MissingApiKey,
                 StatusCode::UNAUTHORIZED,

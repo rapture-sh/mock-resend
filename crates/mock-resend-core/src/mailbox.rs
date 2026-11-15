@@ -24,7 +24,12 @@ pub const MAX_TAG_LENGTH: usize = 256;
 /// The field names are Resend's. Nothing here is optional-by-convenience: `to`, `cc`,
 /// `bcc` and `reply_to` arrive as a string or an array of strings on the wire, and the
 /// HTTP layer has already collapsed both forms into a `Vec` by the time it gets here.
-#[derive(Debug, Clone, Default)]
+///
+/// `Hash` is derived so that the idempotency register can fingerprint a request: two
+/// bodies that differ only in field order normalise to the same struct, and therefore
+/// to the same fingerprint, which is the comparison Resend's
+/// `invalid_idempotent_request` is really about.
+#[derive(Debug, Clone, Default, Hash)]
 pub struct SendEmail {
     /// Sender, as `address` or `Name <address>`.
     pub from: String,
@@ -64,6 +69,12 @@ impl SendEmail {
             subject: subject.into(),
             ..Self::default()
         }
+    }
+
+    /// A stable digest of this request, for idempotency comparison.
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        crate::idempotency::fingerprint_of(self)
     }
 
     /// Checks the request the way Resend does.

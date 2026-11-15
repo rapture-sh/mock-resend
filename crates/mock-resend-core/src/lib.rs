@@ -13,6 +13,7 @@
 pub mod engine;
 pub mod error;
 pub mod events;
+pub mod idempotency;
 pub mod mailbox;
 pub mod model;
 pub mod schedule;
@@ -21,6 +22,7 @@ pub mod store;
 pub use engine::{BatchFailure, BatchOutcome, BatchValidation, Engine, MAX_BATCH, Transition};
 pub use error::{Error, Result};
 pub use events::{ALL_EVENTS, EmailEvent};
+pub use idempotency::{IdempotencyKey, Outcome as IdempotentOutcome};
 pub use mailbox::SendEmail;
 pub use model::{ApiKey, Attachment, AttachmentSource, EmailId, Message, Tag};
 pub use schedule::{Clock, SystemClock, TestClock};
