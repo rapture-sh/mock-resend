@@ -330,6 +330,7 @@ name = "conformance"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "mock-resend-core",
  "mock-resend-testkit",
  "resend-rs",
  "tokio",

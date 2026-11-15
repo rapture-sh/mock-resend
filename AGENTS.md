@@ -246,10 +246,11 @@ bug.
   not capture, an invariant the caller has to keep, a unit, the error a function
   returns, or the reason something is done an unusual way. Explain why, not what.
 - **Cite Resend behaviour where it is surprising.** A one-line comment saying that
-  Resend returns `200` here rather than `201`, that `text` is generated from `html` when
-  omitted, or that `message_id` is absent on `email.scheduled`, with a doc link, is
-  worth more than any other comment in this repo. The next person will otherwise assume
-  it is a bug and "fix" it.
+  Resend returns `200` here rather than `201`, that a webhook payload reports `tags` as
+  an object while the send request takes an array of `{name, value}`, or that
+  `last_event` spells it `canceled` with one `l`, with a doc link, is worth more than any
+  other comment in this repo. The next person will otherwise assume it is a bug and
+  "fix" it.
 - Nothing commented out, no `TODO` without a linked issue, no changelog inside a file.
 - A stale comment is worse than no comment. If the code moves on, delete the comment.
 

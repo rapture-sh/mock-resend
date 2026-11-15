@@ -5,37 +5,12 @@
 //! headers the client sets, and the exact response shape the client deserialises. A
 //! mock that only satisfies its own tests is a mock that agrees with itself.
 
+mod support;
+
 use mock_resend_testkit::MockResend;
 use resend_rs::types::{CreateAttachment, CreateEmailBaseOptions, EmailEvent, Tag};
 use resend_rs::{Config, Resend};
-
-/// A client pointed at a fresh instance, under a key named after the test.
-///
-/// Each test gets its own instance and its own key. The key is the isolation mechanism,
-/// so sharing one would let these tests see each other's mail.
-async fn instance(key: &str) -> (MockResend, Resend) {
-    let server = MockResend::start()
-        .await
-        .expect("the instance binds a port");
-
-    let base_url = server
-        .base_url()
-        .parse()
-        .expect("the testkit reports a valid url");
-
-    let client = Resend::with_config(Config::builder(key).base_url(base_url).build());
-
-    (server, client)
-}
-
-fn email(subject: &str) -> CreateEmailBaseOptions {
-    CreateEmailBaseOptions::new(
-        "Acme <onboarding@example.com>",
-        ["delivered@example.org"],
-        subject,
-    )
-    .with_text("It works")
-}
+use support::{client_for, email, instance};
 
 #[tokio::test]
 async fn should_accept_a_send_from_a_real_sdk() {
@@ -216,14 +191,8 @@ async fn should_reject_a_malformed_id_as_an_invalid_parameter() {
 
 #[tokio::test]
 async fn should_not_return_an_email_sent_under_another_key() {
-    let (first_server, first) = instance("re_should_not_leak_across_keys_first").await;
-
-    let base_url = first_server.base_url().parse().expect("a valid url");
-    let second = Resend::with_config(
-        Config::builder("re_should_not_leak_across_keys_second")
-            .base_url(base_url)
-            .build(),
-    );
+    let (server, first) = instance("re_should_not_leak_across_keys_first").await;
+    let second = client_for(&server, "re_should_not_leak_across_keys_second");
 
     let sent = first.emails.send(email("Private")).await.expect("sent");
 
@@ -258,7 +227,7 @@ async fn should_hold_a_future_send_as_scheduled() {
     assert_eq!(retrieved.last_event, EmailEvent::Scheduled);
     assert!(retrieved.scheduled_at.is_some());
     assert!(
-        retrieved.message_id.is_none(),
-        "Resend has no Message-ID to report until the message is handed off"
+        retrieved.message_id.is_some(),
+        "Resend's documented email.scheduled payload carries a message_id"
     );
 }

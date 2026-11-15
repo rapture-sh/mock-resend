@@ -11,7 +11,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use mock_resend_core::{Clock, Engine, MemoryStore, TestClock};
+use mock_resend_core::{Clock, Engine, MemoryStore, TestClock, Transition};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
@@ -94,9 +94,28 @@ impl MockResend {
         self.clock.now()
     }
 
-    /// Moves the instance's clock forward.
-    pub fn advance_secs(&self, seconds: i64) {
+    /// Moves the instance's clock forward and lets the engine catch up.
+    ///
+    /// This is the replacement for sleeping: a scheduled send due in 24 hours goes out
+    /// the moment a test advances past it, with no wall-clock wait and no flakiness on a
+    /// loaded CI box.
+    ///
+    /// # Errors
+    ///
+    /// [`mock_resend_core::Error::Store`] if the backend fails while sending what is
+    /// now due.
+    pub async fn advance_secs(&self, seconds: i64) -> mock_resend_core::Result<Vec<Transition>> {
         self.clock.advance_secs(seconds);
+        self.engine.tick().await
+    }
+
+    /// Lets the engine send anything already due, without moving the clock.
+    ///
+    /// # Errors
+    ///
+    /// [`mock_resend_core::Error::Store`] if the backend fails.
+    pub async fn tick(&self) -> mock_resend_core::Result<Vec<Transition>> {
+        self.engine.tick().await
     }
 }
 

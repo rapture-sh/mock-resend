@@ -15,7 +15,14 @@ use crate::routes::emails;
 pub fn router(engine: Engine) -> Router {
     Router::new()
         .route("/emails", post(emails::send_email))
-        .route("/emails/{id}", get(emails::get_email))
+        // Registered before the `{id}` route for readability; axum matches a literal
+        // segment ahead of a parameter regardless of declaration order.
+        .route("/emails/batch", post(emails::send_batch))
+        .route(
+            "/emails/{id}",
+            get(emails::get_email).patch(emails::update_email),
+        )
+        .route("/emails/{id}/cancel", post(emails::cancel_email))
         .fallback(|| async { ApiError::unknown_endpoint() })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
         .with_state(engine)
@@ -182,6 +189,151 @@ mod router {
 
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert_eq!(body["name"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn should_route_emails_batch_to_the_batch_handler() {
+        // `/emails/batch` and `/emails/{id}` overlap. If the parameter route won, this
+        // would be an `invalid_parameter` about "batch" not being a UUID.
+        let request = Request::post("/emails/batch")
+            .header("authorization", "Bearer re_should_route_emails_batch")
+            .header("content-type", "application/json")
+            .body(Body::from(format!("[{VALID_BODY}]")))
+            .expect("a well formed test request");
+
+        let (status, body) = response_to(request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn should_omit_the_errors_array_from_a_fully_valid_batch() {
+        let request = Request::post("/emails/batch")
+            .header("authorization", "Bearer re_should_omit_empty_batch_errors")
+            .header("content-type", "application/json")
+            .body(Body::from(format!("[{VALID_BODY}]")))
+            .expect("a well formed test request");
+
+        let (_status, body) = response_to(request).await;
+
+        assert!(
+            body.get("errors").is_none(),
+            "strict mode's documented response has no errors key"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_report_batch_errors_by_index_in_permissive_mode() {
+        let invalid = r#"{"from": "a@example.com", "to": "broken", "subject": "s", "text": "t"}"#;
+
+        let request = Request::post("/emails/batch")
+            .header("authorization", "Bearer re_should_report_batch_errors")
+            .header("content-type", "application/json")
+            .header("x-batch-validation", "permissive")
+            .body(Body::from(format!("[{VALID_BODY},{invalid}]")))
+            .expect("a well formed test request");
+
+        let (status, body) = response_to(request).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["data"].as_array().map(Vec::len), Some(1));
+        assert_eq!(body["errors"][0]["index"], 1);
+    }
+
+    #[tokio::test]
+    async fn should_reject_a_whole_strict_batch_with_an_invalid_entry() {
+        let invalid = r#"{"from": "a@example.com", "to": "broken", "subject": "s", "text": "t"}"#;
+
+        let request = Request::post("/emails/batch")
+            .header("authorization", "Bearer re_should_reject_a_strict_batch")
+            .header("content-type", "application/json")
+            .body(Body::from(format!("[{VALID_BODY},{invalid}]")))
+            .expect("a well formed test request");
+
+        let (status, body) = response_to(request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["name"], "validation_error");
+    }
+
+    #[tokio::test]
+    async fn should_reject_a_batch_body_that_is_not_an_array() {
+        let request = Request::post("/emails/batch")
+            .header("authorization", "Bearer re_should_reject_a_non_array_batch")
+            .header("content-type", "application/json")
+            .body(Body::from(VALID_BODY))
+            .expect("a well formed test request");
+
+        let (status, body) = response_to(request).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["name"], "validation_error");
+    }
+
+    #[tokio::test]
+    async fn should_report_a_missing_scheduled_at_on_a_reschedule() {
+        let request = Request::patch("/emails/9b7a0f6e-0000-4000-8000-000000000000")
+            .header(
+                "authorization",
+                "Bearer re_should_report_a_missing_schedule",
+            )
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .expect("a well formed test request");
+
+        let (status, body) = response_to(request).await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["name"], "missing_required_field");
+    }
+
+    #[tokio::test]
+    async fn should_report_an_unknown_id_on_a_cancel_as_not_found() {
+        let request = Request::post("/emails/9b7a0f6e-0000-4000-8000-000000000000/cancel")
+            .header("authorization", "Bearer re_should_report_unknown_on_cancel")
+            .body(Body::empty())
+            .expect("a well formed test request");
+
+        let (status, body) = response_to(request).await;
+
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["name"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn should_report_object_email_on_a_cancel() {
+        let engine = Engine::in_memory();
+        let router = router(engine.clone());
+
+        let key = mock_resend_core::ApiKey::parse("re_should_report_object_email_on_cancel")
+            .expect("valid");
+        let mut send = mock_resend_core::SendEmail::new(
+            "a@example.com",
+            vec!["b@example.org".to_owned()],
+            "Later",
+        );
+        send.text = Some("t".to_owned());
+        send.scheduled_at = Some(engine.now() + chrono::Duration::hours(1));
+
+        let id = engine.send_email(&key, send).await.expect("captured");
+
+        let request = Request::post(format!("/emails/{id}/cancel"))
+            .header(
+                "authorization",
+                "Bearer re_should_report_object_email_on_cancel",
+            )
+            .body(Body::empty())
+            .expect("a well formed test request");
+
+        let response = router.oneshot(request).await.expect("infallible");
+        let body = to_bytes(response.into_body(), BODY_LIMIT)
+            .await
+            .expect("small");
+        let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
+
+        assert_eq!(json["object"], "email");
+        assert_eq!(json["id"], id.to_string());
     }
 
     #[tokio::test]

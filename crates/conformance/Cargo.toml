@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 
 [dev-dependencies]
+mock-resend-core.workspace = true
 mock-resend-testkit.workspace = true
 
 chrono.workspace = true

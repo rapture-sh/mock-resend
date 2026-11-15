@@ -7,7 +7,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use bytes::Bytes;
 use chrono::{DateTime, SecondsFormat, Utc};
 use mock_resend_core::{
-    Attachment, AttachmentSource, Error as EngineError, Message, SendEmail, Tag,
+    Attachment, AttachmentSource, BatchOutcome, Error as EngineError, Message, SendEmail, Tag,
 };
 use serde::{Deserialize, Serialize};
 
@@ -223,6 +223,98 @@ fn parse_scheduled_at(value: &str) -> Result<DateTime<Utc>, EngineError> {
 pub struct SendEmailResponse {
     /// The id of the captured message.
     pub id: String,
+}
+
+/// The body of `PATCH /emails/{id}`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateEmailRequest {
+    /// The new send time, in ISO 8601.
+    #[serde(default)]
+    pub scheduled_at: Option<String>,
+}
+
+impl UpdateEmailRequest {
+    /// Parses the new send time.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::MissingRequiredField`] when `scheduled_at` is absent, since there
+    /// is nothing else to change, and [`EngineError::Validation`] when it is not a
+    /// timestamp.
+    pub fn scheduled_at(&self) -> Result<DateTime<Utc>, EngineError> {
+        let Some(scheduled_at) = self.scheduled_at.as_deref() else {
+            return Err(EngineError::MissingRequiredField {
+                fields: vec!["scheduled_at".to_owned()],
+            });
+        };
+
+        parse_scheduled_at(scheduled_at)
+    }
+}
+
+/// The body of `PATCH /emails/{id}` and `POST /emails/{id}/cancel`.
+///
+/// Both report the id alongside `object: "email"`, which is what the retrieve response
+/// uses too.
+#[derive(Debug, Clone, Serialize)]
+pub struct EmailIdResponse {
+    /// Always `email`.
+    pub object: &'static str,
+    /// The id of the message that changed.
+    pub id: String,
+}
+
+impl EmailIdResponse {
+    /// Wraps an id.
+    #[must_use]
+    pub fn new(id: &mock_resend_core::EmailId) -> Self {
+        Self {
+            object: "email",
+            id: id.to_string(),
+        }
+    }
+}
+
+/// The body of a successful `POST /emails/batch`.
+///
+/// `errors` is omitted when empty, which is the shape strict mode returns; permissive
+/// mode adds it.
+#[derive(Debug, Clone, Serialize)]
+pub struct SendBatchResponse {
+    /// One entry per captured message, in request order.
+    pub data: Vec<SendEmailResponse>,
+    /// The entries that failed validation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<BatchErrorResponse>,
+}
+
+/// One rejected entry in a permissive batch.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchErrorResponse {
+    /// The entry's position in the request.
+    pub index: usize,
+    /// Why it was rejected.
+    pub message: String,
+}
+
+impl From<BatchOutcome> for SendBatchResponse {
+    fn from(outcome: BatchOutcome) -> Self {
+        Self {
+            data: outcome
+                .ids
+                .iter()
+                .map(|id| SendEmailResponse { id: id.to_string() })
+                .collect(),
+            errors: outcome
+                .failures
+                .into_iter()
+                .map(|failure| BatchErrorResponse {
+                    index: failure.index,
+                    message: failure.message,
+                })
+                .collect(),
+        }
+    }
 }
 
 /// The body of `GET /emails/{id}`.

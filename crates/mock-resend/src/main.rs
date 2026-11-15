@@ -6,6 +6,7 @@ mod cli;
 
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::Parser as _;
 use mock_resend_core::Engine;
@@ -44,6 +45,11 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let bound = listener.local_addr().unwrap_or(address);
 
+    // The engine does not run timers of its own: a scheduled send goes out when
+    // something ticks it. The server ticks on an interval; a test moves the clock and
+    // ticks directly, which is why neither has to sleep.
+    let ticker = tokio::spawn(tick_loop(engine.clone()));
+
     tracing::info!("mock-resend listening on http://{bound}");
     tracing::info!("point a Resend client at it with RESEND_BASE_URL=http://{bound}");
     tracing::warn!(
@@ -54,7 +60,39 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
         .with_graceful_shutdown(shutdown())
         .await?;
 
+    ticker.abort();
+
     Ok(())
+}
+
+/// How often the server looks for a scheduled send that has come due.
+///
+/// A second is well inside the precision anyone schedules at, and the scan is a map
+/// walk over captured mail on a developer machine.
+const TICK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Sends scheduled mail as its time arrives.
+async fn tick_loop(engine: Engine) {
+    let mut interval = tokio::time::interval(TICK_INTERVAL);
+
+    loop {
+        let _tick = interval.tick().await;
+
+        match engine.tick().await {
+            Ok(transitions) => {
+                for transition in transitions {
+                    tracing::info!(
+                        email_id = %transition.id,
+                        event = %transition.to,
+                        "scheduled message went out"
+                    );
+                }
+            }
+            // A tick failure is a storage problem, not a reason to stop ticking: the
+            // next one may well succeed, and a silent dead ticker is worse.
+            Err(error) => tracing::error!("could not send scheduled mail: {error}"),
+        }
+    }
 }
 
 /// Resolves on Ctrl-C, and on `SIGTERM` where there is one.

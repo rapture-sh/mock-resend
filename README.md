@@ -26,7 +26,8 @@ for parallel suites and fault injection. Kywi now consumes it like everyone else
 **Status: pre-release.** This describes the target shape of the first tagged release, not
 a finished product. The admin API will break without ceremony until `0.1.0`.
 
-Working today: `POST /emails`, `GET /emails/{id}`, per-key isolation, and the testkit.
+Working today: the whole `/emails` surface — send, batch, retrieve, reschedule and
+cancel — with scheduled sends you can fast-forward, per-key isolation and the testkit.
 Everything is held in memory. The tables below mark what is landed and what is not, and
 the [issues](https://github.com/rapture-sh/mock-resend/issues) track the rest.
 
@@ -153,19 +154,22 @@ Supported surface
 | Area | Endpoint | |
 | --- | --- | --- |
 | Send | `POST /emails` | ✅ |
-| Send | `POST /emails/batch` | planned |
+| Send | `POST /emails/batch`, with `x-batch-validation` | ✅ |
 | Manage | `GET /emails/{id}` | ✅ |
-| Manage | `PATCH /emails/{id}`, `POST /emails/{id}/cancel` | planned |
+| Manage | `PATCH /emails/{id}`, `POST /emails/{id}/cancel` | ✅ |
 | Protocol | `Bearer` auth, per-key isolation | ✅ |
 | Protocol | `Idempotency-Key`, `ratelimit-*` headers | planned |
 | SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
 | Admin | `POST /_admin/reset`, list captured mail, advance an event, inject a fault | planned |
 
 Validation matches Resend's, because validation is most of what a mock is for. Landed:
-the 50-recipient limit, the tag character set and length, `content` or `path` on an
-attachment but not neither, `template` being mutually exclusive with `html` and `text`,
-and the string-or-array forms of `to`, `cc`, `bcc` and `reply_to`. A payload mock-resend
-accepts is a payload real Resend accepts.
+the 50-recipient limit, the 100-message batch limit, the tag character set and length,
+`content` or `path` on an attachment but not neither, `template` being mutually exclusive
+with `html` and `text`, and the string-or-array forms of `to`, `cc`, `bcc` and
+`reply_to`. A payload mock-resend accepts is a payload real Resend accepts.
+
+Batches honour `x-batch-validation`: `strict`, the default, captures nothing if any entry
+is invalid, and `permissive` captures the valid ones and reports the rest by index.
 
 Errors use Resend's own `name` and status pairings — `validation_error` (400),
 `missing_api_key` (401), `not_found` (404), `method_not_allowed` (405),
@@ -177,8 +181,8 @@ cannot parse as a transport failure rather than as the Resend error it was.
 
 ### Known divergences
 
-Three, all deliberate, per the rule that a divergence gets documented rather than
-plastered over:
+All deliberate, per the rule that a divergence gets documented rather than plastered
+over:
 
 - **`scheduled_at` takes ISO 8601 only.** Resend also accepts natural language such as
   `in 1 min`. An unparseable value here is refused with `validation_error` rather than
@@ -187,6 +191,10 @@ plastered over:
 - **An empty `cc`, `bcc` or `reply_to` is reported as `null`.** Resend's retrieve-email
   example shows `[null]`, which no SDK can deserialise into a list of strings. `null` is
   the reading both the Rust and Node SDKs accept.
+- **Rescheduling or cancelling a message that already went out returns
+  `validation_error`.** Resend's error for that case is not documented and we have not
+  confirmed it against the live API, so the name is a considered choice rather than a
+  verified one. The 400 and the name may change once it is checked.
 - **No `User-Agent` requirement.** Whether real Resend rejects a request without one is
   not something we have confirmed against the live API, so nothing is enforced. Being
   permissive fails open; guessing would fail a request the real API accepts.

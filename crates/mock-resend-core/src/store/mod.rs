@@ -8,6 +8,7 @@ pub mod memory;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
 use crate::model::{ApiKey, EmailId, Message};
@@ -31,6 +32,13 @@ pub trait Store: Send + Sync + 'static {
 
     /// Discards everything under `key`, or everything in the store when `key` is `None`.
     async fn reset(&self, key: Option<&ApiKey>) -> Result<()>;
+
+    /// Returns every scheduled message whose send time has arrived, across all keys.
+    ///
+    /// Crosses namespaces because the clock does: a tick has to find work under every
+    /// key, and no caller sees the result — only the engine, which then reports each
+    /// transition under the key that owns it.
+    async fn due_scheduled(&self, now: DateTime<Utc>) -> Result<Vec<Message>>;
 }
 
 /// The longest filename this will produce, in bytes.

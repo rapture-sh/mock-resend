@@ -4,14 +4,20 @@
 //! here rather than in the engine is a rule the SMTP listener does not get.
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, body::Bytes};
-use mock_resend_core::{EmailId, Engine};
+use mock_resend_core::{BatchValidation, EmailId, Engine};
 
 use crate::auth::AuthenticatedKey;
 use crate::error::ApiError;
-use crate::wire::emails::{EmailResponse, SendEmailRequest, SendEmailResponse};
+use crate::wire::emails::{
+    EmailIdResponse, EmailResponse, SendBatchResponse, SendEmailRequest, SendEmailResponse,
+    UpdateEmailRequest,
+};
+
+/// The header Resend reads to choose a batch's validation mode.
+const BATCH_VALIDATION_HEADER: &str = "x-batch-validation";
 
 /// `POST /emails`
 ///
@@ -44,6 +50,45 @@ pub async fn send_email(
     Ok((StatusCode::OK, Json(response)).into_response())
 }
 
+/// `POST /emails/batch`
+///
+/// Captures up to 100 messages in one call. The body is a bare JSON array, not an
+/// object wrapping one, which is what both the Node and Rust SDKs send.
+///
+/// <https://resend.com/docs/api-reference/emails/send-batch-emails>
+pub async fn send_batch(
+    State(engine): State<Engine>,
+    AuthenticatedKey(key): AuthenticatedKey,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let requests: Vec<SendEmailRequest> = parse_body(&body)?;
+
+    let validation = BatchValidation::parse(
+        headers
+            .get(BATCH_VALIDATION_HEADER)
+            .and_then(|value| value.to_str().ok()),
+    );
+
+    // A body that will not convert at all fails the whole call whatever the mode: a
+    // shape error is not a per-entry validation failure, and permissive mode is about
+    // the latter.
+    let mut engine_requests = Vec::with_capacity(requests.len());
+    for request in requests {
+        engine_requests.push(request.into_engine_request()?);
+    }
+
+    let outcome = engine.send_batch(&key, engine_requests, validation).await?;
+
+    tracing::info!(
+        captured = outcome.ids.len(),
+        refused = outcome.failures.len(),
+        "captured a batch"
+    );
+
+    Ok((StatusCode::OK, Json(SendBatchResponse::from(outcome))).into_response())
+}
+
 /// `GET /emails/{id}`
 ///
 /// Returns a captured message, including its most recent delivery event.
@@ -54,13 +99,60 @@ pub async fn get_email(
     AuthenticatedKey(key): AuthenticatedKey,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    // A non-UUID is `invalid_parameter`, not `not_found`. Getting this backwards hides a
-    // caller that is passing the wrong value entirely.
-    let id: EmailId = id.parse()?;
-
+    let id = parse_id(&id)?;
     let message = engine.get_email(&key, &id).await?;
 
     Ok((StatusCode::OK, Json(EmailResponse::from(message))).into_response())
+}
+
+/// `PATCH /emails/{id}`
+///
+/// Moves a scheduled send to a new time.
+///
+/// <https://resend.com/docs/api-reference/emails/update-email>
+pub async fn update_email(
+    State(engine): State<Engine>,
+    AuthenticatedKey(key): AuthenticatedKey,
+    Path(id): Path<String>,
+    body: Bytes,
+) -> Result<Response, ApiError> {
+    let id = parse_id(&id)?;
+    let request: UpdateEmailRequest = parse_body(&body)?;
+
+    let updated = engine
+        .reschedule_email(&key, &id, request.scheduled_at()?)
+        .await?;
+
+    tracing::info!(email_id = %updated, "rescheduled a message");
+
+    Ok((StatusCode::OK, Json(EmailIdResponse::new(&updated))).into_response())
+}
+
+/// `POST /emails/{id}/cancel`
+///
+/// Cancels a scheduled send. Resend has no `email.canceled` webhook, so this changes
+/// the retrieved state without notifying a handler.
+///
+/// <https://resend.com/docs/api-reference/emails/cancel-email>
+pub async fn cancel_email(
+    State(engine): State<Engine>,
+    AuthenticatedKey(key): AuthenticatedKey,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let id = parse_id(&id)?;
+    let cancelled = engine.cancel_email(&key, &id).await?;
+
+    tracing::info!(email_id = %cancelled, "cancelled a scheduled message");
+
+    Ok((StatusCode::OK, Json(EmailIdResponse::new(&cancelled))).into_response())
+}
+
+/// Parses an id from the path.
+///
+/// A non-UUID is `invalid_parameter`, not `not_found`. Getting this backwards hides a
+/// caller that is passing the wrong value entirely.
+fn parse_id(id: &str) -> Result<EmailId, ApiError> {
+    id.parse().map_err(ApiError::from)
 }
 
 /// Parses a JSON request body into `T`.
