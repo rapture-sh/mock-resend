@@ -2301,3 +2301,209 @@ mod injected_faults {
         assert!(!second.allowed);
     }
 }
+
+#[cfg(test)]
+mod header_injection {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use chrono::Duration;
+
+    use crate::engine::Engine;
+    use crate::error::Error;
+    use crate::mailbox::SendEmail;
+    use crate::model::{ApiKey, EmailId};
+    use crate::schedule::{Clock, TestClock};
+    use crate::store::disk::DiskStore;
+
+    /// A temporary directory that cleans itself up.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("mock-resend-{name}-{}", EmailId::generate()));
+
+            std::fs::create_dir_all(&path).expect("the temporary directory is creatable");
+
+            Self(path)
+        }
+
+        fn path(&self) -> &PathBuf {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _removed = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn key(name: &str) -> ApiKey {
+        ApiKey::parse(name).expect("the test key is re_-prefixed")
+    }
+
+    /// An engine on the **disk** backend, which is the default the server runs with and
+    /// the one these regressions only appear on.
+    async fn engine(directory: &TempDir) -> (Engine, Arc<TestClock>) {
+        let store = DiskStore::open(directory.path())
+            .await
+            .expect("the store opens");
+        let clock = Arc::new(TestClock::new());
+        let shared: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+
+        (Engine::new(Arc::new(store), shared), clock)
+    }
+
+    fn request(header: &str, value: &str) -> SendEmail {
+        let mut headers = BTreeMap::new();
+        let _inserted = headers.insert(header.to_owned(), value.to_owned());
+
+        let mut request = SendEmail::new(
+            "attacker@example.com",
+            vec!["victim-recipient@example.org".to_owned()],
+            "a subject that must not leak",
+        );
+        request.text = Some("a body that must not leak".to_owned());
+        request.headers = headers;
+        request
+    }
+
+    #[tokio::test]
+    async fn should_not_let_a_header_move_a_captured_message_into_another_keys_mailbox() {
+        // The regression this exists for: a CR/LF in a header value used to append an
+        // `X-Mock-Resend-Api-Key` to the stored `.eml`. Reading the file back then
+        // reported the forged owner, and the next write — a scheduled send going out —
+        // filed the message, its subject and its recipients under the victim's key, and
+        // announced the `email.sent` webhook there too.
+        let directory = TempDir::new("header-injection");
+        let (engine, clock) = engine(&directory).await;
+
+        let attacker = key("re_should_not_move_mail_attacker");
+        let victim = key("re_should_not_move_mail_victim");
+
+        let mut request = request(
+            "X-Harmless",
+            "ok\r\nX-Mock-Resend-Api-Key: re_should_not_move_mail_victim",
+        );
+        request.scheduled_at = Some(clock.now() + Duration::hours(1));
+
+        let refused = engine
+            .send_email(&attacker, request)
+            .await
+            .expect_err("a header value with a newline in it is not a header value");
+
+        assert!(matches!(refused, Error::Validation { .. }));
+
+        // And nothing reached either mailbox, including after the tick that used to be
+        // the step that moved the file.
+        clock.advance_secs(7_200);
+        let _transitions = engine.tick().await.expect("tick succeeds");
+
+        assert!(
+            engine
+                .list_emails(&attacker)
+                .await
+                .expect("list")
+                .is_empty()
+        );
+        assert!(
+            engine.list_emails(&victim).await.expect("list").is_empty(),
+            "one key's mail must never appear under another's"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_not_let_a_header_forge_a_delivery_event() {
+        let directory = TempDir::new("forged-event");
+        let (engine, _clock) = engine(&directory).await;
+        let key = key("re_should_not_forge_a_delivery_event");
+
+        let refused = engine
+            .send_email(
+                &key,
+                request("X-Harmless", "ok\r\nX-Mock-Resend-Last-Event: delivered"),
+            )
+            .await
+            .expect_err("refused at validation");
+
+        assert!(matches!(refused, Error::Validation { .. }));
+    }
+
+    #[tokio::test]
+    async fn should_keep_the_engines_own_headers_ahead_of_the_callers_in_the_eml() {
+        // Defence in depth for the same bug. `from_eml` takes the first match for each
+        // private header, so the engine's block has to be written before anything the
+        // caller supplied: then even a value that somehow carried a newline could not
+        // shadow the field that says who owns the message.
+        let directory = TempDir::new("header-order");
+        let (engine, _clock) = engine(&directory).await;
+        let key = key("re_should_write_engine_headers_first");
+
+        let id = engine
+            .send_email(&key, request("X-Harmless", "ok"))
+            .await
+            .expect("captured");
+
+        let message = engine.get_email(&key, &id).await.expect("it is there");
+        let eml = crate::mime::to_eml(&message).expect("it writes");
+        let text = String::from_utf8_lossy(&eml);
+
+        let engine_block = text
+            .find("X-Mock-Resend-Api-Key:")
+            .expect("the engine's block is there");
+        let caller_header = text
+            .find("X-Harmless:")
+            .expect("the caller's header is there");
+
+        assert!(
+            engine_block < caller_header,
+            "the engine's headers have to come first"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_ignore_an_eml_whose_recorded_owner_is_not_the_mailbox_it_is_in() {
+        // The last layer: a file hand-edited in the volume, or a volume shared between
+        // two data directories, must not hand one key's mail to another.
+        let directory = TempDir::new("mismatched-owner");
+        let attacker = key("re_should_ignore_a_mismatched_owner_attacker");
+        let victim = key("re_should_ignore_a_mismatched_owner_victim");
+
+        let id = {
+            let (engine, _clock) = engine(&directory).await;
+
+            engine
+                .send_email(&attacker, request("X-Harmless", "ok"))
+                .await
+                .expect("captured")
+        };
+
+        // Rewrite the stored file so it claims the victim owns it, exactly as a
+        // successful injection would have.
+        let mailbox = std::fs::read_dir(directory.path())
+            .expect("the root is readable")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| path.is_dir())
+            .expect("there is a mailbox");
+        let file = mailbox.join(format!("{id}.eml"));
+
+        let original = std::fs::read_to_string(&file).expect("the .eml is text");
+        let forged = original.replace(attacker.as_str(), victim.as_str());
+        std::fs::write(&file, forged).expect("the file is writable");
+
+        let (engine, _clock) = engine(&directory).await;
+
+        assert!(
+            engine.list_emails(&victim).await.expect("list").is_empty(),
+            "a file that claims another owner must not be indexed under it"
+        );
+        assert!(
+            matches!(engine.get_email(&attacker, &id).await, Err(Error::NotFound)),
+            "and the mailbox it sits in must not serve it either"
+        );
+    }
+}

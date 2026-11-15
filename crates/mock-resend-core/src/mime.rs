@@ -91,16 +91,14 @@ pub fn to_eml(message: &Message) -> Result<Vec<u8>> {
     // computer name into every captured `.eml` on a mounted volume.
     builder = builder.message_id(message_id_body(message));
 
-    for (name, value) in &message.headers {
-        // A caller cannot smuggle state in: anything in the private namespace is
-        // dropped here, so a header the engine reads back is one the engine wrote.
-        if is_private(name) {
-            continue;
-        }
-
-        builder = builder.header(name.clone(), Raw::new(value.clone()));
-    }
-
+    // The engine's own block goes first, before anything the caller supplied.
+    //
+    // That ordering is a safety property, not a style choice. `from_eml` takes the
+    // *first* match for each of these, so whatever the engine wrote wins over anything
+    // that appears later in the file. Header values are validated to contain no CR or
+    // LF, which is what stops a caller appending a header at all; writing ours first
+    // means that even if a value ever slipped through, it could not change who owns a
+    // captured message.
     builder = builder
         .header(HEADER_KEY, Raw::new(message.key.as_str().to_owned()))
         .header(HEADER_ID, Raw::new(message.id.to_string()))
@@ -119,6 +117,18 @@ pub fn to_eml(message: &Message) -> Result<Vec<u8>> {
         // neither can contain the `=` that separates them or a newline that would end
         // the header.
         builder = builder.header(HEADER_TAG, Raw::new(format!("{}={}", tag.name, tag.value)));
+    }
+
+    // Everything the caller supplied comes after the block above, so none of it can
+    // shadow a field the engine owns.
+    for (name, value) in &message.headers {
+        // A caller cannot smuggle state in: anything in the private namespace is
+        // dropped here, so a header the engine reads back is one the engine wrote.
+        if is_private(name) {
+            continue;
+        }
+
+        builder = builder.header(name.clone(), Raw::new(value.clone()));
     }
 
     if let Some(text) = &message.text {
@@ -151,7 +161,10 @@ pub fn to_eml(message: &Message) -> Result<Vec<u8>> {
                     .clone()
                     .unwrap_or_else(|| DEFAULT_CONTENT_TYPE.to_owned());
 
-                let mut part = MimePart::new(content_type, content.to_vec()).attachment(filename);
+                // Borrowed, not copied. `put` happens again on every event transition, so a
+                // `to_vec()` here would copy every attachment byte each time a message
+                // moved from sent to delivered.
+                let mut part = MimePart::new(content_type, content.as_ref()).attachment(filename);
 
                 if let Some(content_id) = &attachment.content_id {
                     part = part.inline().cid(content_id.clone());
@@ -919,5 +932,323 @@ mod is_private {
         for name in ["X-Entity-Ref-ID", "Subject", "X-Mock", "X-Mock-Resend"] {
             assert!(!is_private(name), "{name} is not in the private namespace");
         }
+    }
+}
+
+#[cfg(test)]
+mod inbound_to_send {
+    use super::{Envelope, inbound_to_send, is_private};
+    use crate::model::AttachmentSource;
+
+    fn envelope(sender: &str, recipients: &[&str]) -> Envelope {
+        Envelope {
+            sender: sender.to_owned(),
+            recipients: recipients
+                .iter()
+                .map(|recipient| (*recipient).to_owned())
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn should_use_the_envelope_sender_when_the_message_has_no_from_header() {
+        let raw = b"To: b@example.org\r\nSubject: Headerless\r\n\r\nIt works";
+
+        let request = inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"]))
+            .expect("a message with no From is still a message");
+
+        assert_eq!(request.from, "a@example.com");
+    }
+
+    #[test]
+    fn should_leave_from_empty_when_neither_the_headers_nor_the_envelope_name_a_sender() {
+        // The null sender, which is legal SMTP. The engine refuses the send; inventing
+        // an address here would make an invalid message look valid.
+        let raw = b"To: b@example.org\r\nSubject: Null sender\r\n\r\nIt works";
+
+        let request =
+            inbound_to_send(raw, &envelope("", &["b@example.org"])).expect("it still parses");
+
+        assert_eq!(request.from, "");
+        assert!(request.validate().is_err());
+    }
+
+    #[test]
+    fn should_use_the_envelope_recipients_when_the_message_has_no_to_header() {
+        let raw = b"From: a@example.com\r\nSubject: Undisclosed\r\n\r\nIt works";
+
+        let request = inbound_to_send(
+            raw,
+            &envelope("a@example.com", &["one@example.org", "two@example.org"]),
+        )
+        .expect("parses");
+
+        assert_eq!(request.to, ["one@example.org", "two@example.org"]);
+        assert!(
+            request.bcc.is_empty(),
+            "a recipient already reported as `to` is not also blind-copied"
+        );
+    }
+
+    #[test]
+    fn should_keep_an_empty_subject_when_the_message_has_no_subject_header() {
+        let raw = b"From: a@example.com\r\nTo: b@example.org\r\n\r\nIt works";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert_eq!(request.subject, "");
+    }
+
+    #[test]
+    fn should_give_a_message_with_no_body_an_empty_text_body() {
+        let raw = b"From: a@example.com\r\nTo: b@example.org\r\nSubject: Nothing\r\n\r\n";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert_eq!(request.text.as_deref(), Some(""));
+        assert_eq!(request.html, None);
+    }
+
+    #[test]
+    fn should_read_both_bodies_of_a_multipart_alternative() {
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Subject: Both\r\n\
+                    Content-Type: multipart/alternative; boundary=\"inner\"\r\n\
+                    \r\n\
+                    --inner\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    It works\r\n\
+                    --inner\r\n\
+                    Content-Type: text/html\r\n\
+                    \r\n\
+                    <p>It works</p>\r\n\
+                    --inner--\r\n";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert_eq!(request.text.as_deref(), Some("It works"));
+        assert_eq!(request.html.as_deref(), Some("<p>It works</p>"));
+    }
+
+    #[test]
+    fn should_read_a_body_and_an_attachment_out_of_nested_multiparts() {
+        // What a mail client actually sends for a message with an attachment: the two
+        // bodies in an alternative, nested inside a mixed that carries the file.
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Subject: Nested\r\n\
+                    Content-Type: multipart/mixed; boundary=\"outer\"\r\n\
+                    \r\n\
+                    --outer\r\n\
+                    Content-Type: multipart/alternative; boundary=\"inner\"\r\n\
+                    \r\n\
+                    --inner\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    It works\r\n\
+                    --inner\r\n\
+                    Content-Type: text/html\r\n\
+                    \r\n\
+                    <p>It works</p>\r\n\
+                    --inner--\r\n\
+                    --outer\r\n\
+                    Content-Type: text/csv\r\n\
+                    Content-Disposition: attachment; filename=\"report.csv\"\r\n\
+                    \r\n\
+                    name,count\r\n\
+                    --outer--\r\n";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert_eq!(request.text.as_deref(), Some("It works"));
+        assert_eq!(request.html.as_deref(), Some("<p>It works</p>"));
+        assert_eq!(request.attachments.len(), 1);
+
+        let attachment = &request.attachments[0];
+
+        assert_eq!(attachment.filename.as_deref(), Some("report.csv"));
+        assert_eq!(attachment.content_type.as_deref(), Some("text/csv"));
+        assert_eq!(
+            attachment.source,
+            AttachmentSource::Content(bytes::Bytes::from_static(b"name,count"))
+        );
+    }
+
+    #[test]
+    fn should_keep_an_attachment_filename_that_looks_like_a_path_as_a_filename() {
+        // An arbitrary string, and this one is hostile. It is made safe where it becomes
+        // a path, in `store::resolve_in`, rather than by being refused or rewritten here.
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Subject: Traversal\r\n\
+                    Content-Type: multipart/mixed; boundary=\"outer\"\r\n\
+                    \r\n\
+                    --outer\r\n\
+                    Content-Type: text/plain\r\n\
+                    \r\n\
+                    It works\r\n\
+                    --outer\r\n\
+                    Content-Type: application/octet-stream\r\n\
+                    Content-Disposition: attachment; filename=\"../../etc/passwd\"\r\n\
+                    \r\n\
+                    payload\r\n\
+                    --outer--\r\n";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert_eq!(
+            request.attachments[0].filename.as_deref(),
+            Some("../../etc/passwd")
+        );
+    }
+
+    #[test]
+    fn should_not_blind_copy_a_recipient_a_cc_header_accounts_for() {
+        let raw = b"From: a@example.com\r\n\
+                    To: visible@example.org\r\n\
+                    Cc: copied@example.org\r\n\
+                    Subject: Copies\r\n\
+                    \r\n\
+                    It works";
+
+        let request = inbound_to_send(
+            raw,
+            &envelope(
+                "a@example.com",
+                &["visible@example.org", "copied@example.org"],
+            ),
+        )
+        .expect("parses");
+
+        assert_eq!(request.cc, ["copied@example.org"]);
+        assert!(
+            request.bcc.is_empty(),
+            "a visible copy is not a blind one, so it must not appear twice"
+        );
+    }
+
+    #[test]
+    fn should_match_an_envelope_recipient_to_a_header_regardless_of_case() {
+        let raw = b"From: a@example.com\r\n\
+                    To: Visible <visible@example.org>\r\n\
+                    Subject: Casing\r\n\
+                    \r\n\
+                    It works";
+
+        let request = inbound_to_send(raw, &envelope("a@example.com", &["VISIBLE@EXAMPLE.ORG"]))
+            .expect("parses");
+
+        assert!(
+            request.bcc.is_empty(),
+            "an address differing only in case is the same address"
+        );
+    }
+
+    #[test]
+    fn should_not_repeat_a_recipient_the_bcc_header_already_names() {
+        let raw = b"From: a@example.com\r\n\
+                    To: visible@example.org\r\n\
+                    Bcc: blind@example.org\r\n\
+                    Subject: Blind\r\n\
+                    \r\n\
+                    It works";
+
+        let request = inbound_to_send(
+            raw,
+            &envelope(
+                "a@example.com",
+                &["visible@example.org", "blind@example.org"],
+            ),
+        )
+        .expect("parses");
+
+        assert_eq!(request.bcc, ["blind@example.org"]);
+    }
+
+    #[test]
+    fn should_keep_a_caller_supplied_header_and_drop_the_structural_ones() {
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Subject: Headers\r\n\
+                    X-Entity-Ref-ID: 12345\r\n\
+                    \r\n\
+                    It works";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert_eq!(
+            request.headers.get("X-Entity-Ref-ID").map(String::as_str),
+            Some("12345")
+        );
+        for structural in ["From", "To", "Subject"] {
+            assert!(
+                !request.headers.contains_key(structural),
+                "{structural} has its own field and must not be duplicated into headers"
+            );
+        }
+    }
+
+    #[test]
+    fn should_not_let_an_inbound_message_smuggle_engine_state_in_a_header() {
+        // SMTP is a second way into the same engine, so the private namespace has to be
+        // stripped here too: a sender must not be able to claim a mailbox that is not
+        // the authenticated one, or name its own delivery event.
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Subject: Smuggling\r\n\
+                    X-Mock-Resend-Api-Key: re_another_key\r\n\
+                    X-Mock-Resend-Last-Event: delivered\r\n\
+                    \r\n\
+                    It works";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert!(
+            !request.headers.keys().any(|name| is_private(name)),
+            "the private namespace belongs to the engine, got {:?}",
+            request.headers
+        );
+    }
+
+    #[test]
+    fn should_not_carry_tags_a_schedule_or_a_template_in_from_smtp() {
+        // None of the three has a header a mail client sends, and reading one out of an
+        // arbitrary header would invent API surface SMTP does not have.
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Subject: Plain\r\n\
+                    \r\n\
+                    It works";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert!(request.tags.is_empty());
+        assert_eq!(request.scheduled_at, None);
+        assert_eq!(request.template, None);
+    }
+
+    #[test]
+    fn should_read_the_reply_to_header() {
+        let raw = b"From: a@example.com\r\n\
+                    To: b@example.org\r\n\
+                    Reply-To: Support <support@example.com>\r\n\
+                    Subject: Replies\r\n\
+                    \r\n\
+                    It works";
+
+        let request =
+            inbound_to_send(raw, &envelope("a@example.com", &["b@example.org"])).expect("parses");
+
+        assert_eq!(request.reply_to, ["Support <support@example.com>"]);
     }
 }

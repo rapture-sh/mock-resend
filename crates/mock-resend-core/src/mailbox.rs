@@ -138,6 +138,10 @@ impl SendEmail {
             }
         }
 
+        for (name, value) in &self.headers {
+            validate_header(name, value)?;
+        }
+
         for tag in &self.tags {
             validate_tag_part("name", &tag.name)?;
             validate_tag_part("value", &tag.value)?;
@@ -201,6 +205,44 @@ fn extract_address(value: &str) -> &str {
         (Some(open), Some(close)) if close > open => trimmed[open + 1..close].trim(),
         _ => trimmed,
     }
+}
+
+/// Checks one caller-supplied header.
+///
+/// A header value containing a carriage return or newline is not a header value: it is
+/// two headers. Writing one verbatim into a message lets a caller append any header
+/// they like, which in this server means forging the `X-Mock-Resend-*` fields the disk
+/// backend uses to record which API key owns a captured message — and so moving their
+/// own mail, subject and recipients into somebody else's mailbox. Rejecting is also
+/// what the real API has to do, because an injected header is not representable in
+/// RFC 5322.
+///
+/// A tab is allowed in a value: it is how a long header is legally folded.
+fn validate_header(name: &str, value: &str) -> Result<()> {
+    if name.trim().is_empty() {
+        return Err(Error::validation("A header name cannot be empty."));
+    }
+
+    // RFC 5322 field names are printable US-ASCII without a colon.
+    if let Some(offender) = name
+        .chars()
+        .find(|character| !character.is_ascii_graphic() || *character == ':')
+    {
+        return Err(Error::validation(format!(
+            "The header name `{name}` contains {offender:?}, which a header name cannot contain."
+        )));
+    }
+
+    if let Some(offender) = value
+        .chars()
+        .find(|character| character.is_control() && *character != '\t')
+    {
+        return Err(Error::validation(format!(
+            "The value of header `{name}` contains {offender:?}. A header value cannot contain a control character, because a newline in one would start another header."
+        )));
+    }
+
+    Ok(())
 }
 
 /// Tag names and values take ASCII letters, digits, underscores and dashes only.
@@ -406,6 +448,80 @@ mod send_email {
                 "{field} should be validated like `to`"
             );
         }
+    }
+
+    #[test]
+    fn should_accept_an_ordinary_custom_header() {
+        let mut request = valid();
+        let _inserted = request
+            .headers
+            .insert("X-Entity-Ref-ID".to_owned(), "abc-123".to_owned());
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn should_reject_a_header_value_containing_a_newline() {
+        // The injection that let a caller forge `X-Mock-Resend-Api-Key` in the `.eml`
+        // and move their own captured mail into another key's mailbox.
+        for injected in [
+            "ok\r\nX-Mock-Resend-Api-Key: re_victim",
+            "ok\nX-Mock-Resend-Last-Event: delivered",
+            "ok\rX-Mock-Resend-Id: 00000000-0000-4000-8000-000000000000",
+        ] {
+            let mut request = valid();
+            let _inserted = request
+                .headers
+                .insert("X-Harmless".to_owned(), injected.to_owned());
+
+            assert!(
+                matches!(request.validate(), Err(Error::Validation { .. })),
+                "{injected:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn should_reject_a_header_value_containing_a_null_byte() {
+        let mut request = valid();
+        let _inserted = request
+            .headers
+            .insert("X-Harmless".to_owned(), "ok\0more".to_owned());
+
+        assert!(matches!(request.validate(), Err(Error::Validation { .. })));
+    }
+
+    #[test]
+    fn should_allow_a_tab_in_a_header_value() {
+        // A tab is how a long header is legally folded, so refusing it would reject
+        // something real Resend accepts.
+        let mut request = valid();
+        let _inserted = request
+            .headers
+            .insert("X-Folded".to_owned(), "one\ttwo".to_owned());
+
+        assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn should_reject_a_header_name_containing_a_newline_or_colon() {
+        for name in ["X-Bad\r\nX-Worse", "X-Bad: value", "X-Bad\tTab"] {
+            let mut request = valid();
+            let _inserted = request.headers.insert(name.to_owned(), "value".to_owned());
+
+            assert!(
+                matches!(request.validate(), Err(Error::Validation { .. })),
+                "{name:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn should_reject_an_empty_header_name() {
+        let mut request = valid();
+        let _inserted = request.headers.insert(String::new(), "value".to_owned());
+
+        assert!(matches!(request.validate(), Err(Error::Validation { .. })));
     }
 
     #[test]

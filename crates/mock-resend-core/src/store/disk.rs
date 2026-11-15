@@ -153,10 +153,26 @@ impl DiskStore {
                 // skipped rather than fatal: a developer poking around in the volume
                 // should not be able to stop the server from starting.
                 match mime::from_eml(&raw) {
-                    Ok(message) => restored
-                        .entry(message.key.clone())
-                        .or_default()
-                        .push(message),
+                    Ok(message) => {
+                        // Indexed under the mailbox it was found in, not under whatever
+                        // the file claims. A file whose recorded owner disagrees with
+                        // its location would otherwise put one key's mail into
+                        // another's index on the next restart.
+                        let expected = self.directory_for(&message.key)?;
+
+                        if Some(expected.as_path()) != path.parent() {
+                            tracing::warn!(
+                                "skipping a file in the data directory: its recorded owner does not match the mailbox it is in"
+                            );
+
+                            continue;
+                        }
+
+                        restored
+                            .entry(message.key.clone())
+                            .or_default()
+                            .push(message);
+                    }
                     // A file this server did not write, or wrote in an older format, is
                     // skipped rather than fatal. The reason is logged; the path is not,
                     // because it contains the API key, and neither are the contents.
@@ -182,11 +198,29 @@ impl DiskStore {
     async fn read(&self, key: &ApiKey, id: &EmailId) -> Result<Option<Message>> {
         let path = self.path_for(key, id)?;
 
-        match fs::read(&path).await {
-            Ok(raw) => mime::from_eml(&raw).map(Some),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(io_failure("read", &error)),
+        let raw = match fs::read(&path).await {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_failure("read", &error)),
+        };
+
+        let message = mime::from_eml(&raw)?;
+
+        // The file says who owns it, and that has to agree with the mailbox it was
+        // found in. Disagreement means the file was not written by this server for this
+        // key — a hand-edited `.eml`, a volume shared between two data directories, or
+        // a bug — and the only safe answer is that this key has no such message.
+        // Returning it would hand one key's mail to another, which is the one thing
+        // per-key isolation has to prevent, and `put`ting it back would move the file.
+        if message.key != *key || message.id != *id {
+            tracing::warn!(
+                "ignoring a file in the data directory whose recorded owner or id does not match its location"
+            );
+
+            return Ok(None);
         }
+
+        Ok(Some(message))
     }
 }
 
@@ -313,11 +347,12 @@ mod disk_store {
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
+    use bytes::Bytes;
     use chrono::{DateTime, Duration, Utc};
 
     use super::DiskStore;
     use crate::events::EmailEvent;
-    use crate::model::{ApiKey, EmailId, Message};
+    use crate::model::{ApiKey, Attachment, AttachmentSource, EmailId, Message};
     use crate::store::Store;
 
     /// A temporary directory that cleans itself up.
@@ -744,5 +779,161 @@ mod disk_store {
 
         assert_eq!(store.root(), nested.as_path());
         assert!(nested.exists());
+    }
+    #[tokio::test]
+    async fn should_return_none_for_an_id_that_was_never_captured() {
+        let directory = TempDir::new("unknown-id");
+        let store = DiskStore::open(directory.path()).await.expect("it opens");
+        let key = key("re_should_return_none_for_an_unknown_id_disk");
+
+        assert!(
+            store
+                .get(&key, &EmailId::generate())
+                .await
+                .expect("get succeeds")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn should_list_nothing_for_a_key_that_has_never_been_used() {
+        let directory = TempDir::new("unused-key");
+        let store = DiskStore::open(directory.path()).await.expect("it opens");
+
+        assert!(
+            store
+                .list(&key("re_should_list_nothing_for_an_unused_key_disk"))
+                .await
+                .expect("list succeeds")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn should_keep_every_message_when_one_key_is_written_to_concurrently() {
+        // A parallel suite under one key is the normal case, and the mailbox directory
+        // is created by whichever write gets there first. A lost message or a lost index
+        // entry here would look like mail that was captured and then vanished.
+        let directory = TempDir::new("concurrent");
+        let store = std::sync::Arc::new(DiskStore::open(directory.path()).await.expect("it opens"));
+        let key = key("re_should_capture_concurrently_disk");
+
+        let messages: Vec<Message> = (0..16)
+            .map(|index| message(&key, &format!("message {index}"), at(index)))
+            .collect();
+
+        let writes: Vec<_> = messages
+            .iter()
+            .cloned()
+            .map(|message| {
+                let store = std::sync::Arc::clone(&store);
+
+                tokio::spawn(async move { store.put(message).await })
+            })
+            .collect();
+
+        for write in writes {
+            write
+                .await
+                .expect("the task finished")
+                .expect("put succeeds");
+        }
+
+        let listed = store.list(&key).await.expect("list succeeds");
+
+        assert_eq!(listed.len(), messages.len());
+
+        for message in &messages {
+            assert_eq!(
+                listed.iter().filter(|found| found.id == message.id).count(),
+                1,
+                "every message is listed exactly once"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn should_keep_an_attachment_whose_filename_looks_like_a_path_inside_the_mailbox() {
+        // The filename is a caller-supplied string, and clients send this one. It is
+        // part of the message rather than part of the path, so it survives untouched
+        // and nothing is written outside the data directory.
+        let directory = TempDir::new("hostile-attachment");
+        let store = DiskStore::open(directory.path()).await.expect("it opens");
+        let key = key("re_should_keep_a_hostile_attachment_filename");
+
+        let mut message = message(&key, "Attached", at(0));
+        message.attachments = vec![Attachment {
+            filename: Some("../../../../etc/passwd".to_owned()),
+            content_type: Some("text/plain".to_owned()),
+            content_id: None,
+            source: AttachmentSource::Content(Bytes::from_static(b"not a password file")),
+        }];
+
+        store.put(message.clone()).await.expect("put succeeds");
+
+        let children: Vec<_> = std::fs::read_dir(directory.path())
+            .expect("the root is readable")
+            .filter_map(std::result::Result::ok)
+            .collect();
+
+        assert_eq!(children.len(), 1, "only the mailbox directory is written");
+
+        let files: Vec<_> = std::fs::read_dir(children[0].path())
+            .expect("the mailbox is readable")
+            .filter_map(std::result::Result::ok)
+            .collect();
+
+        assert_eq!(
+            files.len(),
+            1,
+            "one .eml, and no file named after the filename"
+        );
+
+        let found = store
+            .get(&key, &message.id)
+            .await
+            .expect("get succeeds")
+            .expect("the message is there");
+
+        assert_eq!(found.attachments, message.attachments);
+    }
+
+    #[tokio::test]
+    async fn should_not_let_an_attachment_filename_rewrite_the_messages_own_state() {
+        // A filename carrying a line break is an attempt to end the header it is written
+        // into and start another. If one got through, a message could claim an owner or a
+        // delivery event the engine never gave it.
+        let directory = TempDir::new("header-injection");
+        let store = DiskStore::open(directory.path()).await.expect("it opens");
+        let owner = key("re_should_not_let_a_filename_rewrite_state");
+
+        let mut message = message(&owner, "Injected", at(0));
+        message.attachments = vec![Attachment {
+            filename: Some(
+                "report.csv\r\nX-Mock-Resend-Api-Key: re_forged\r\nX-Mock-Resend-Last-Event: delivered"
+                    .to_owned(),
+            ),
+            content_type: Some("text/csv".to_owned()),
+            content_id: None,
+            source: AttachmentSource::Content(Bytes::from_static(b"name,count")),
+        }];
+
+        store.put(message.clone()).await.expect("put succeeds");
+
+        let found = store
+            .get(&owner, &message.id)
+            .await
+            .expect("get succeeds")
+            .expect("the message is there");
+
+        assert_eq!(found.key, owner);
+        assert_eq!(found.last_event, EmailEvent::Sent);
+        assert!(
+            store
+                .list(&key("re_forged"))
+                .await
+                .expect("list succeeds")
+                .is_empty()
+        );
     }
 }
