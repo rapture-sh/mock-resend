@@ -122,11 +122,22 @@ pub async fn check(url: &str, policy: Policy) -> Result<Url, Refusal> {
         });
     }
 
-    for address in addresses {
-        check_address(address, policy)?;
-    }
+    check_resolved(&addresses, policy)?;
 
     Ok(parsed)
+}
+
+/// Checks every address one host resolved to.
+///
+/// # Errors
+///
+/// A [`Refusal`] naming the first address that is not reachable.
+fn check_resolved(addresses: &[IpAddr], policy: Policy) -> Result<(), Refusal> {
+    for address in addresses {
+        check_address(*address, policy)?;
+    }
+
+    Ok(())
 }
 
 /// Checks one resolved address.
@@ -396,5 +407,56 @@ mod check {
 
         assert_eq!(url.path(), "/hooks");
         assert_eq!(url.query(), Some("a=1"));
+    }
+}
+
+#[cfg(test)]
+mod check_resolved {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    use super::{Policy, Refusal, check_resolved};
+
+    fn v4(address: &str) -> IpAddr {
+        IpAddr::V4(address.parse::<Ipv4Addr>().expect("a valid address"))
+    }
+
+    #[test]
+    fn should_refuse_a_host_that_resolves_to_a_forbidden_address_as_well_as_an_allowed_one() {
+        // A name under the caller's control can answer with several addresses, and a
+        // guard that trusted the first one would be bypassed by putting a loopback in
+        // front of the metadata service.
+        let mixed = [v4("127.0.0.1"), v4("169.254.169.254")];
+
+        assert!(matches!(
+            check_resolved(&mixed, Policy::LocalOnly),
+            Err(Refusal::Forbidden { .. })
+        ));
+    }
+
+    #[test]
+    fn should_refuse_a_mixed_answer_whichever_order_it_arrives_in() {
+        let forbidden_first = [v4("169.254.169.254"), v4("127.0.0.1")];
+
+        assert!(matches!(
+            check_resolved(&forbidden_first, Policy::LocalOnly),
+            Err(Refusal::Forbidden { .. })
+        ));
+    }
+
+    #[test]
+    fn should_refuse_a_private_answer_paired_with_a_public_one_by_default() {
+        let mixed = [v4("10.0.0.5"), v4("93.184.216.34")];
+
+        assert!(matches!(
+            check_resolved(&mixed, Policy::LocalOnly),
+            Err(Refusal::Public { .. })
+        ));
+    }
+
+    #[test]
+    fn should_accept_a_host_that_resolves_to_several_allowed_addresses() {
+        let all_local = [v4("127.0.0.1"), v4("10.0.0.5"), v4("192.168.1.10")];
+
+        assert!(check_resolved(&all_local, Policy::LocalOnly).is_ok());
     }
 }

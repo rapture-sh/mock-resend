@@ -52,6 +52,9 @@ pub struct Data {
     /// Why it bounced. Present only on `email.bounced`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bounce: Option<Bounce>,
+    /// What was clicked. Present only on `email.clicked`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub click: Option<Click>,
     /// Why it failed. Present only on `email.failed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<Failed>,
@@ -63,11 +66,37 @@ pub struct Bounce {
     /// What happened, in words.
     pub message: String,
     /// The bounce sub-type. camelCase on the wire, unlike everything around it.
+    ///
+    /// **This is not a free string.** `resend_rs::events::BounceType` is a closed enum
+    /// of `Suppressed` and `MessageRejected` with no catch-all, and `Event` is
+    /// `#[serde(untagged)]`, so a value outside that pair makes `try_parse_event` fail
+    /// for *every* variant — the caller gets "data did not match any variant of
+    /// untagged enum Event" rather than a bounce.
     #[serde(rename = "subType")]
-    pub sub_type: String,
+    pub sub_type: &'static str,
     /// `Permanent` or `Transient`.
     #[serde(rename = "type")]
-    pub kind: String,
+    pub kind: &'static str,
+}
+
+/// The `click` object on `email.clicked`.
+///
+/// Resend's documented `email.clicked` payload always carries one, so a handler reading
+/// `data.click.link` has to find it here too. The values are necessarily synthetic — no
+/// real recipient clicked anything — so they are obviously so rather than plausibly
+/// real, except the link, which is lifted out of the HTML body when there is one.
+#[derive(Debug, Clone, Serialize)]
+pub struct Click {
+    /// Where the click came from.
+    #[serde(rename = "ipAddress")]
+    pub ip_address: &'static str,
+    /// The link that was clicked.
+    pub link: String,
+    /// When it happened.
+    pub timestamp: String,
+    /// The browser that did it.
+    #[serde(rename = "userAgent")]
+    pub user_agent: String,
 }
 
 /// The `failed` object on `email.failed`.
@@ -101,8 +130,20 @@ pub fn build(message: &Message, event: EmailEvent, at: DateTime<Utc>) -> Option<
         bounce: (event == EmailEvent::Bounced).then(|| Bounce {
             message: "The recipient's mail server rejected the message. Injected by mock-resend."
                 .to_owned(),
-            sub_type: "General".to_owned(),
-            kind: "Permanent".to_owned(),
+            sub_type: "MessageRejected",
+            kind: "Permanent",
+        }),
+        click: (event == EmailEvent::Clicked).then(|| Click {
+            ip_address: "127.0.0.1",
+            link: first_link(message.html.as_deref())
+                .unwrap_or_else(|| "https://example.com/".to_owned()),
+            timestamp: timestamp(at),
+            user_agent: concat!(
+                "mock-resend/",
+                env!("CARGO_PKG_VERSION"),
+                " (simulated click)"
+            )
+            .to_owned(),
         }),
         failed: (event == EmailEvent::Failed).then(|| Failed {
             reason: "The message could not be sent. Injected by mock-resend.".to_owned(),
@@ -114,6 +155,31 @@ pub fn build(message: &Message, event: EmailEvent, at: DateTime<Utc>) -> Option<
         created_at: timestamp(at),
         data,
     })
+}
+
+/// The first `href` in an HTML body.
+///
+/// A simulated click has to say what was clicked, and the message's own first link is
+/// the only answer that is not made up.
+fn first_link(html: Option<&str>) -> Option<String> {
+    let html = html?;
+    let start = html.find("href=")? + "href=".len();
+    let rest = html.get(start..)?;
+
+    let quote = rest.chars().next()?;
+    let quoted = quote == '"' || quote == '\'';
+
+    let rest = if quoted { rest.get(1..)? } else { rest };
+
+    let end = if quoted {
+        rest.find(quote)?
+    } else {
+        rest.find(|character: char| character.is_whitespace() || character == '>')?
+    };
+
+    let link = rest.get(..end)?.trim();
+
+    (!link.is_empty()).then(|| link.to_owned())
 }
 
 /// Formats a timestamp the way a webhook payload does.
@@ -233,6 +299,64 @@ mod build {
     fn should_add_a_bounce_object_only_to_a_bounce() {
         assert!(json(EmailEvent::Bounced)["data"]["bounce"]["subType"].is_string());
         assert!(json(EmailEvent::Sent)["data"].get("bounce").is_none());
+    }
+
+    #[test]
+    fn should_use_a_bounce_sub_type_the_sdk_can_deserialise() {
+        // `BounceType` is a closed enum of `Suppressed` and `MessageRejected`, and
+        // `Event` is untagged, so anything else fails every variant and the caller sees
+        // a parse error instead of a bounce. Asserting the value is a string, as an
+        // earlier version of this test did, cannot catch that.
+        let sub_type = json(EmailEvent::Bounced)["data"]["bounce"]["subType"].clone();
+
+        assert!(
+            matches!(sub_type.as_str(), Some("Suppressed" | "MessageRejected")),
+            "got {sub_type}"
+        );
+    }
+
+    #[test]
+    fn should_add_a_click_object_only_to_a_click() {
+        // Resend's documented `email.clicked` always carries one, so a handler reading
+        // `data.click.link` has to find it here too.
+        let click = json(EmailEvent::Clicked);
+        let click = &click["data"]["click"];
+
+        assert!(click["link"].is_string());
+        assert!(click["ipAddress"].is_string());
+        assert!(click["timestamp"].is_string());
+        assert!(click["userAgent"].is_string());
+        assert!(json(EmailEvent::Sent)["data"].get("click").is_none());
+    }
+
+    #[test]
+    fn should_report_the_messages_own_first_link_as_the_one_clicked() {
+        let mut message = message();
+        message.html = Some(
+            r#"<p>Hello <a href="https://example.com/confirm?token=abc">confirm</a></p>"#
+                .to_owned(),
+        );
+
+        let at = Utc::now();
+        let payload = build(&message, EmailEvent::Clicked, at).expect("a click has a webhook");
+        let json = serde_json::to_value(payload).expect("it serialises");
+
+        assert_eq!(
+            json["data"]["click"]["link"],
+            "https://example.com/confirm?token=abc"
+        );
+    }
+
+    #[test]
+    fn should_fall_back_to_a_placeholder_link_when_there_is_no_html() {
+        let mut message = message();
+        message.html = None;
+
+        let at = Utc::now();
+        let payload = build(&message, EmailEvent::Clicked, at).expect("a click has a webhook");
+        let json = serde_json::to_value(payload).expect("it serialises");
+
+        assert!(json["data"]["click"]["link"].is_string());
     }
 
     #[test]

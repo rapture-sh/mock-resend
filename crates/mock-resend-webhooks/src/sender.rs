@@ -136,7 +136,14 @@ impl Sender {
         // One Svix message id for the whole delivery, reused across retries so a
         // receiver can deduplicate rather than acting twice on the same event.
         let message_id = format!("msg_{}", Uuid::new_v4().as_simple());
-        let timestamp = transition.at.timestamp();
+
+        // The wall clock, deliberately, *not* `transition.at`. The signed timestamp is
+        // replay protection on the wire, and a real `svix` verifier rejects anything
+        // outside a five-minute window before it checks the signature. Moving the
+        // engine's clock a day forward is the headline feature, so signing with it would
+        // make every webhook after an `/_admin/clock` call unverifiable. The event's own
+        // time is in the payload, where it belongs.
+        let timestamp = chrono::Utc::now().timestamp();
 
         let headers = match signature::sign(&endpoint.secret, &message_id, timestamp, body) {
             Ok(headers) => headers,
