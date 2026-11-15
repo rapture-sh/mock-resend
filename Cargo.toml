@@ -1,0 +1,26 @@
+[workspace]
+# `crates/*` once the first crate lands. A glob that matches nothing is a hard error in
+# cargo, so until then this has to be the explicit list, or a fresh clone will not build.
+#
+# Add `default-members = ["crates/mock-resend"]` with the server crate. Until then xtask
+# is the only binary in the workspace, so a bare `cargo run` reaches it instead of the
+# server the README documents.
+members = ["xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+repository = "https://github.com/rapture-sh/mock-resend"
+
+# `[workspace.dependencies]` goes here, and each crate joins it in the pull request that
+# first uses it. Cargo warns about a workspace dependency nothing depends on, and this
+# repo does not ship warnings, so the settled stack is named in AGENTS.md rather than
+# pinned here ahead of the code.
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
