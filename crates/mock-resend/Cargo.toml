@@ -1,0 +1,18 @@
+[package]
+name = "mock-resend"
+description = "A Resend-compatible email API for local development and testing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mock-resend-api.workspace = true
+mock-resend-core.workspace = true
+
+axum.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
