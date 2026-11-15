@@ -344,7 +344,9 @@ dependencies = [
  "hmac",
  "mock-resend-core",
  "mock-resend-testkit",
+ "reqwest 0.12.28",
  "resend-rs",
+ "serde_json",
  "sha2",
  "tokio",
 ]
@@ -1151,12 +1153,28 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "mock-resend-admin",
  "mock-resend-api",
  "mock-resend-core",
  "mock-resend-webhooks",
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "mock-resend-admin"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "mock-resend-api",
+ "mock-resend-core",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tower",
+ "tracing",
 ]
 
 [[package]]
@@ -1194,6 +1212,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "mock-resend-admin",
  "mock-resend-api",
  "mock-resend-core",
  "mock-resend-webhooks",

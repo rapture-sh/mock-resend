@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 
 /// A source of the current time.
 ///
@@ -15,15 +15,58 @@ use chrono::{DateTime, TimeZone, Utc};
 pub trait Clock: Send + Sync + 'static {
     /// The current instant, as the engine understands it.
     fn now(&self) -> DateTime<Utc>;
+
+    /// Moves the clock forward by `by`, reporting whether it could.
+    ///
+    /// A clock that cannot be moved returns `false` rather than failing, so the admin
+    /// API can report "this instance's clock is fixed" instead of pretending the
+    /// request worked.
+    fn advance(&self, by: Duration) -> bool {
+        let _unused = by;
+        false
+    }
 }
 
-/// The wall clock. What the server runs with.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemClock;
+/// The wall clock, with an offset the admin API can move.
+///
+/// What the server runs with. Time passes on its own, so a delivery delay elapses
+/// without anyone asking, and the offset means a test against a running container can
+/// still jump a day forward instead of waiting one.
+#[derive(Debug, Default)]
+pub struct SystemClock {
+    /// Milliseconds added to the wall clock. Only ever moved forward.
+    offset_millis: AtomicI64,
+}
+
+impl SystemClock {
+    /// A clock reading the wall clock exactly.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 impl Clock for SystemClock {
     fn now(&self) -> DateTime<Utc> {
-        Utc::now()
+        let offset = self.offset_millis.load(Ordering::SeqCst);
+
+        Utc::now() + Duration::milliseconds(offset)
+    }
+
+    fn advance(&self, by: Duration) -> bool {
+        // Backwards is refused rather than clamped: a clock that silently ignored a
+        // negative jump would make a test that expected one quietly meaningless.
+        if by < Duration::zero() {
+            return false;
+        }
+
+        let _previous =
+            self.offset_millis
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                    Some(current.saturating_add(by.num_milliseconds()))
+                });
+
+        true
     }
 }
 
@@ -87,6 +130,16 @@ impl Default for TestClock {
 }
 
 impl Clock for TestClock {
+    fn advance(&self, by: Duration) -> bool {
+        if by < Duration::zero() {
+            return false;
+        }
+
+        self.advance_millis(by.num_milliseconds());
+
+        true
+    }
+
     fn now(&self) -> DateTime<Utc> {
         let millis = self.millis.load(Ordering::SeqCst);
 

@@ -14,6 +14,7 @@ repository = "https://github.com/rapture-sh/mock-resend"
 # warns about one nothing depends on, so this list is exactly what the code compiles
 # against today. The settled stack is named in AGENTS.md.
 [workspace.dependencies]
+mock-resend-admin = { path = "crates/mock-resend-admin", version = "0.1.0" }
 mock-resend-api = { path = "crates/mock-resend-api", version = "0.1.0" }
 mock-resend-core = { path = "crates/mock-resend-core", version = "0.1.0" }
 mock-resend-testkit = { path = "crates/mock-resend-testkit", version = "0.1.0" }

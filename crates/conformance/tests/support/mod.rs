@@ -3,6 +3,11 @@
 //! Each test gets its own instance and its own key. The key is the isolation mechanism,
 //! so sharing one would let these tests see each other's mail.
 
+// Each integration test binary compiles this module separately and uses a different
+// subset of it, so anything one binary does not call is dead code from that binary's
+// point of view. Narrower than this would mean an attribute on every item.
+#![allow(dead_code)]
+
 use mock_resend_testkit::MockResend;
 use resend_rs::types::CreateEmailBaseOptions;
 use resend_rs::{Config, Resend};

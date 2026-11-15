@@ -1,0 +1,22 @@
+[package]
+name = "mock-resend-admin"
+description = "The /_admin surface for mock-resend: reset, inspect, advance an event, move the clock, inject a fault."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mock-resend-api.workspace = true
+mock-resend-core.workspace = true
+
+axum.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+tower.workspace = true

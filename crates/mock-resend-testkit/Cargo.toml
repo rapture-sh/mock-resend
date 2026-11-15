@@ -8,6 +8,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+mock-resend-admin.workspace = true
 mock-resend-api.workspace = true
 mock-resend-core.workspace = true
 mock-resend-webhooks.workspace = true

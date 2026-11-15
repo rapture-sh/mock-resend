@@ -21,7 +21,9 @@ pub mod schedule;
 pub mod store;
 pub mod webhook;
 
-pub use engine::{BatchFailure, BatchOutcome, BatchValidation, Engine, MAX_BATCH, Transition};
+pub use engine::{
+    BatchFailure, BatchOutcome, BatchValidation, Engine, MAX_BATCH, Stats, Transition,
+};
 pub use error::{Error, Result};
 pub use events::{ALL_EVENTS, EmailEvent};
 pub use fault::{

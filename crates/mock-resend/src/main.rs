@@ -78,6 +78,7 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!("mock-resend listening on http://{bound}");
     tracing::info!("point a Resend client at it with RESEND_BASE_URL=http://{bound}");
+    tracing::info!("admin API on http://{bound}/_admin, unauthenticated");
     tracing::warn!(
         "captured mail is held in memory and goes away with this process; it is never delivered"
     );
@@ -92,7 +93,12 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
         tracing::warn!("webhooks may reach public addresses; captured mail can leave this machine");
     }
 
-    axum::serve(listener, mock_resend_api::router(engine))
+    // Merged rather than mounted from inside the Resend router: the Resend surface must
+    // not depend on the admin surface, and merging also keeps the rate limit layer off
+    // these routes. A suite that has shut itself out still needs a working reset.
+    let app = mock_resend_api::router(engine.clone()).merge(mock_resend_admin::router(engine));
+
+    axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await?;
 

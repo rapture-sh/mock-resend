@@ -4,6 +4,7 @@
 //! parses a request, calls one of these, and maps the error; it never reaches past this
 //! into the store or appends an event itself.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
@@ -45,7 +46,7 @@ impl Engine {
     /// An engine with the in-memory store and the wall clock.
     #[must_use]
     pub fn in_memory() -> Self {
-        Self::new(Arc::new(MemoryStore::new()), Arc::new(SystemClock))
+        Self::new(Arc::new(MemoryStore::new()), Arc::new(SystemClock::new()))
     }
 
     /// An engine over a given store and clock.
@@ -553,6 +554,39 @@ impl Engine {
         &self.webhooks
     }
 
+    /// Moves the engine's clock forward, reporting whether it could.
+    ///
+    /// This is what makes "this email goes out in 24 hours" a millisecond instead of a
+    /// day. The caller is expected to [`Engine::tick`] afterwards, which is what
+    /// actually sends anything the jump made due.
+    pub fn advance_clock(&self, by: Duration) -> bool {
+        self.clock.advance(by)
+    }
+
+    /// Counts what has been captured under `key`, by delivery event.
+    ///
+    /// Not a Resend endpoint. The admin API reports it so a suite can assert on what it
+    /// sent without retrieving every message.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] if the backend fails.
+    pub async fn stats(&self, key: &ApiKey) -> Result<Stats> {
+        let messages = self.store.list(key).await?;
+
+        let mut by_event: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for message in &messages {
+            *by_event.entry(message.last_event.as_str()).or_default() += 1;
+        }
+
+        Ok(Stats {
+            captured: messages.len(),
+            by_event,
+            webhook_endpoints: self.webhooks.for_key(key)?.len(),
+            fault_rules: self.faults.for_key(key)?.rules.len(),
+        })
+    }
+
     /// Announces a transition, if anything is listening.
     ///
     /// A closed or absent channel is not an error. Nothing the caller asked for depends
@@ -671,6 +705,19 @@ pub struct BatchFailure {
     pub index: usize,
     /// Why it was rejected.
     pub message: String,
+}
+
+/// What a key has done, for the admin API to report.
+#[derive(Debug, Clone, Default)]
+pub struct Stats {
+    /// How many messages have been captured.
+    pub captured: usize,
+    /// How many are at each delivery event, keyed by the wire form.
+    pub by_event: BTreeMap<&'static str, usize>,
+    /// How many webhook endpoints are registered.
+    pub webhook_endpoints: usize,
+    /// How many fault rules are waiting to fire.
+    pub fault_rules: usize,
 }
 
 /// A delivery event that just happened.

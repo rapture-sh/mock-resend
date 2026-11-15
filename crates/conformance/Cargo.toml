@@ -20,6 +20,10 @@ axum.workspace = true
 base64.workspace = true
 chrono.workspace = true
 hmac.workspace = true
+# The admin API is spoken to over plain HTTP, the way a suite in any language
+# would, rather than through a Rust helper.
+reqwest.workspace = true
 resend-rs.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true

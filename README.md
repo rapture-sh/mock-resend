@@ -26,10 +26,11 @@ for parallel suites and fault injection. Kywi now consumes it like everyone else
 **Status: pre-release.** This describes the target shape of the first tagged release, not
 a finished product. The admin API will break without ceremony until `0.1.0`.
 
-Working today: the whole `/emails` surface — send, batch, retrieve, reschedule and
-cancel — with scheduled sends you can fast-forward, per-key isolation and the testkit.
-Everything is held in memory. The tables below mark what is landed and what is not, and
-the [issues](https://github.com/rapture-sh/mock-resend/issues) track the rest.
+Working today: the whole `/emails` surface, the delivery event lifecycle with signed
+webhooks, idempotency keys, per-key fault injection and rate limiting, and the `/_admin`
+API. Still to come: the SMTP listener, writing captured mail to disk as `.eml`, and the
+embedded console. Everything is held in memory for now. The tables below mark what is
+landed and what is not.
 
 
 Running it
@@ -172,7 +173,8 @@ Supported surface
 | Faults | Per-key error injection and delivery outcomes | ✅ |
 | Webhooks | Svix-signed delivery to per-key endpoints, with retries | ✅ |
 | SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
-| Admin | `POST /_admin/reset`, list captured mail, advance an event, inject a fault | planned |
+| Admin | The whole `/_admin` surface below | ✅ |
+| Console | The embedded web UI | planned |
 
 Validation matches Resend's, because validation is most of what a mock is for. Landed:
 the 50-recipient limit, the 100-message batch limit, the tag character set and length,
@@ -218,6 +220,46 @@ over:
 - **No `User-Agent` requirement.** Whether real Resend rejects a request without one is
   not something we have confirmed against the live API, so nothing is enforced. Being
   permissive fails open; guessing would fail a request the real API accepts.
+
+
+Admin API
+---------
+
+Unauthenticated, on the same listener under `/_admin`, and never rate limited — a suite
+that has shut itself out still needs a working way to reset. It is not Resend's API and
+does not pretend to be; it exists so a suite in any language can drive the parts of a mail
+server you cannot normally drive.
+
+| Endpoint | What it does |
+| --- | --- |
+| `GET /_admin/health` | Liveness, the version, and the engine's current time |
+| `POST /_admin/reset` | Wipe one key (`{"api_key": "re_…"}`) or every key (`{}`) |
+| `GET /_admin/emails?api_key=` | Everything captured, with headers, tags and attachment metadata |
+| `GET /_admin/emails/{id}?api_key=` | One captured message, in full |
+| `POST /_admin/emails/{id}/events` | Move a message to another delivery event |
+| `POST /_admin/clock` | Move the clock forward, and send what that made due |
+| `POST /_admin/faults` | Inject a Resend error for the next *n* requests |
+| `DELETE /_admin/faults?api_key=` | Clear a key's fault rules |
+| `POST /_admin/delivery` | Make delivery bounce, fail or stall under a key |
+| `POST /_admin/webhooks` | Register an endpoint, and get its signing secret back |
+| `GET /_admin/webhooks?api_key=` | The endpoints registered under a key |
+| `DELETE /_admin/webhooks/{id}?api_key=` | Remove one endpoint |
+| `GET /_admin/stats?api_key=` | Counts by delivery event, endpoints, pending faults |
+
+```bash
+curl -X POST http://localhost:9100/_admin/clock -H "Content-Type: application/json" -d '{"seconds": 86400}'
+```
+
+```bash
+curl -X POST http://localhost:9100/_admin/faults -H "Content-Type: application/json" -d '{"api_key":"re_test","error":"rate_limit_exceeded","target":"send","times":1}'
+```
+
+A fault's status defaults to the one Resend serves that error with, so you only have to
+know the name you want to test against. Registering a webhook hands back the signing
+secret in full, which a real API would never do: nothing here is a secret, and a test that
+cannot read it cannot check a signature.
+
+The console that will sit on top of this is a later phase.
 
 
 Delivery events and webhooks

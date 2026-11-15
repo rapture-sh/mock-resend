@@ -128,7 +128,8 @@ impl MockResend {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let address = listener.local_addr()?;
 
-        let router = mock_resend_api::router(engine.clone());
+        let router = mock_resend_api::router(engine.clone())
+            .merge(mock_resend_admin::router(engine.clone()));
         let server = tokio::spawn(async move {
             // A serve error here means the test's listener went away, which is what
             // happens on drop and is not worth reporting.
