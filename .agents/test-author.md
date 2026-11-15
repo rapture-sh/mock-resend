@@ -14,10 +14,9 @@ actually catch the bug:
   fault matching, filename resolution. They bind no ports and run in milliseconds. Most
   coverage belongs here.
 - **Conformance tests** live in `crates/conformance/tests/` and drive a real instance
-  through a real Resend SDK. They cover the wire: the `Bearer` and `User-Agent`
-  requirements, field names, the string-or-array fields, status codes, error names, and
-  webhook signatures that a real verifier accepts. Anything that adds API surface needs
-  one.
+  through a real Resend SDK. They cover the wire: the `Bearer` requirement, field names,
+  the string-or-array fields, status codes, error names, and webhook signatures that a
+  real verifier accepts. Anything that adds API surface needs one.
 
 Rules:
 

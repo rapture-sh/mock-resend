@@ -112,7 +112,7 @@ crates/
 
   mock-resend-api/           the Resend REST surface
     src/router.rs            route table
-    src/auth.rs              Bearer parsing, the User-Agent requirement
+    src/auth.rs              Bearer parsing, and the key-to-namespace mapping
     src/error.rs             engine errors to Resend error names and statuses
     src/wire/                request and response types
     src/routes/emails.rs     send, batch, retrieve, update, cancel
@@ -264,9 +264,9 @@ filename resolution. They bind no ports and run in milliseconds. This is where c
 counts.
 
 **Conformance tests** live in `crates/conformance/tests/` and drive a real instance
-through a real Resend SDK. They cover the wire: the auth and `User-Agent` requirements,
-field names, the string-or-array fields, status codes, error names, webhook signatures
-a real verifier accepts. Anything that adds API surface needs one.
+through a real Resend SDK. They cover the wire: the auth requirement, field names, the
+string-or-array fields, status codes, error names, and webhook signatures a real verifier
+accepts. Anything that adds API surface needs one.
 
 Conventions:
 

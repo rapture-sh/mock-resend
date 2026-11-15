@@ -24,8 +24,11 @@ with the API, scheduled sends you can fast-forward, idempotency keys, per-key is
 for parallel suites and fault injection. Kywi now consumes it like everyone else.
 
 **Status: pre-release.** This describes the target shape of the first tagged release, not
-a finished product. The admin API will break without ceremony until `0.1.0`. See the
-[issues](https://github.com/rapture-sh/mock-resend/issues) for what is wired up today.
+a finished product. The admin API will break without ceremony until `0.1.0`.
+
+Working today: `POST /emails`, `GET /emails/{id}`, per-key isolation, and the testkit.
+Everything is held in memory. The tables below mark what is landed and what is not, and
+the [issues](https://github.com/rapture-sh/mock-resend/issues) track the rest.
 
 
 Running it
@@ -55,7 +58,8 @@ volumes:
 
 Run without a volume and the container keeps captured mail in its own writable layer,
 which disappears with the container. For a suite that wants nothing on disk at all, pass
-`--in-memory`.
+`--in-memory`. Until the disk backend lands, in-memory is the only mode and the volume is
+unused — see [Configuration](#configuration).
 
 
 Pointing a client at it
@@ -83,18 +87,24 @@ curl -X POST http://localhost:9100/emails -H "Authorization: Bearer re_test" -H 
 Configuration
 -------------
 
-| Flag | Default | What it does |
-| --- | --- | --- |
-| `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written |
-| `--in-memory` | off | Keep everything in RAM and discard it on exit |
-| `--port` | `9100` | Resend HTTP API port |
-| `--smtp-port` | `1025` | SMTP listener port |
-| `--no-smtp` | off | Disable the SMTP listener |
-| `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers |
-| `--log <level>` | `info` | `error`, `warn`, `info`, `debug`, `trace` |
+| Flag | Default | What it does | |
+| --- | --- | --- | --- |
+| `--host <addr>` | `0.0.0.0` | Address to bind the API to | ✅ |
+| `--port` | `9100` | Resend HTTP API port | ✅ |
+| `--log <level>` | `info` | `error`, `warn`, `info`, `debug`, `trace` | ✅ |
+| `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written | planned |
+| `--in-memory` | off | Keep everything in RAM and discard it on exit | planned |
+| `--smtp-port` | `1025` | SMTP listener port | planned |
+| `--no-smtp` | off | Disable the SMTP listener | planned |
+| `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers | planned |
 
 Every flag has a `MOCK_RESEND_`-prefixed environment variable equivalent, which is usually
-easier in a compose file.
+easier in a compose file. `RUST_LOG` overrides `--log` with a full filter directive if you
+want per-module control.
+
+Captured mail is currently held in memory only, so a restart loses it and the `--data`
+flag does not exist yet: the disk backend writes an `.eml`, so it lands with the MIME
+writer rather than ahead of it.
 
 Rate limiting is **off by default** even though real Resend limits you to 10 requests per
 second. A test suite that trips a rate limit it did not ask for is a flaky test suite; a
@@ -140,23 +150,46 @@ in-process on a random port.
 Supported surface
 -----------------
 
-| Area | Endpoints |
-| --- | --- |
-| Send | `POST /emails`, `POST /emails/batch` |
-| Manage | `GET /emails/{id}`, `PATCH /emails/{id}`, `POST /emails/{id}/cancel` |
-| Protocol | `Bearer` auth, the mandatory `User-Agent` check, `Idempotency-Key`, `ratelimit-*` headers |
-| SMTP | Plain SMTP on `:1025`, username `resend`, password any API key |
-| Admin | `POST /_admin/reset`, list captured mail, advance an event, inject a fault |
+| Area | Endpoint | |
+| --- | --- | --- |
+| Send | `POST /emails` | ✅ |
+| Send | `POST /emails/batch` | planned |
+| Manage | `GET /emails/{id}` | ✅ |
+| Manage | `PATCH /emails/{id}`, `POST /emails/{id}/cancel` | planned |
+| Protocol | `Bearer` auth, per-key isolation | ✅ |
+| Protocol | `Idempotency-Key`, `ratelimit-*` headers | planned |
+| SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
+| Admin | `POST /_admin/reset`, list captured mail, advance an event, inject a fault | planned |
 
-Validation matches Resend's, because validation is most of what a mock is for: the
-50-recipient limit, the tag character set, `content` or `path` on an attachment but not
-neither, `template` being mutually exclusive with `html` and `text`, and the
-`Idempotency-Key` rules. A payload mock-resend accepts is a payload real Resend accepts.
+Validation matches Resend's, because validation is most of what a mock is for. Landed:
+the 50-recipient limit, the tag character set and length, `content` or `path` on an
+attachment but not neither, `template` being mutually exclusive with `html` and `text`,
+and the string-or-array forms of `to`, `cc`, `bcc` and `reply_to`. A payload mock-resend
+accepts is a payload real Resend accepts.
 
-Errors use Resend's own `name` and status pairings — `validation_error`,
-`missing_required_field`, `invalid_attachment`, `rate_limit_exceeded`,
-`invalid_idempotent_request` and the rest — so code that branches on an error name can be
-tested against them.
+Errors use Resend's own `name` and status pairings — `validation_error` (400),
+`missing_api_key` (401), `not_found` (404), `method_not_allowed` (405),
+`missing_required_field`, `invalid_attachment` and `invalid_parameter` (422),
+`application_error` (500) — in the `{"statusCode", "message", "name"}` body a real SDK
+deserialises, so code that branches on an error name can be tested against them. Note
+that every response is JSON, 404 and 405 included: the Rust SDK reports an error body it
+cannot parse as a transport failure rather than as the Resend error it was.
+
+### Known divergences
+
+Three, all deliberate, per the rule that a divergence gets documented rather than
+plastered over:
+
+- **`scheduled_at` takes ISO 8601 only.** Resend also accepts natural language such as
+  `in 1 min`. An unparseable value here is refused with `validation_error` rather than
+  being treated as "now", because a scheduled send that goes out immediately is the kind
+  of wrong answer a test would believe.
+- **An empty `cc`, `bcc` or `reply_to` is reported as `null`.** Resend's retrieve-email
+  example shows `[null]`, which no SDK can deserialise into a list of strings. `null` is
+  the reading both the Rust and Node SDKs accept.
+- **No `User-Agent` requirement.** Whether real Resend rejects a request without one is
+  not something we have confirmed against the live API, so nothing is enforced. Being
+  permissive fails open; guessing would fail a request the real API accepts.
 
 
 Delivery events and webhooks
