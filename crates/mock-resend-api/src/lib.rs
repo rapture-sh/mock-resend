@@ -8,6 +8,7 @@
 
 pub mod auth;
 pub mod error;
+pub mod ratelimit;
 pub mod router;
 pub mod routes;
 pub mod wire;

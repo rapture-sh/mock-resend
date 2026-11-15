@@ -10,7 +10,7 @@ use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use mock_resend_core::{Clock, Engine, MemoryStore, TestClock, Transition};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -27,6 +27,41 @@ pub struct MockResend {
     server: JoinHandle<()>,
 }
 
+/// What to turn on for an instance.
+///
+/// Everything here is off by default, which is the point: a suite that trips a rate
+/// limit or a delivery it did not ask for is a flaky suite, so each is opt-in.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Options {
+    /// Requests allowed per second per key, or `None` for no limit.
+    pub rate_limit: Option<u32>,
+    /// How long after being sent a message is delivered, or `None` to leave it at
+    /// `sent` until the test advances it.
+    pub delivery_delay: Option<Duration>,
+}
+
+impl Options {
+    /// Options with nothing turned on.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Limits every key to `limit` requests a second.
+    #[must_use]
+    pub fn rate_limit(mut self, limit: u32) -> Self {
+        self.rate_limit = Some(limit);
+        self
+    }
+
+    /// Delivers a message `delay` after it is sent.
+    #[must_use]
+    pub fn delivery_delay(mut self, delay: Duration) -> Self {
+        self.delivery_delay = Some(delay);
+        self
+    }
+}
+
 impl MockResend {
     /// Starts an instance with the in-memory store and a clock the test controls.
     ///
@@ -34,9 +69,20 @@ impl MockResend {
     ///
     /// Any failure binding the listener.
     pub async fn start() -> io::Result<Self> {
+        Self::start_with(Options::new()).await
+    }
+
+    /// Starts an instance with rate limiting or automatic delivery turned on.
+    ///
+    /// # Errors
+    ///
+    /// Any failure binding the listener.
+    pub async fn start_with(options: Options) -> io::Result<Self> {
         let clock = Arc::new(TestClock::new());
         let shared: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
-        let engine = Engine::new(Arc::new(MemoryStore::new()), shared);
+        let engine = Engine::new(Arc::new(MemoryStore::new()), shared)
+            .with_rate_limit(options.rate_limit)
+            .with_delivery_delay(options.delivery_delay);
 
         // Port zero: the operating system picks one that is free, so two tests running
         // at the same time cannot collide.

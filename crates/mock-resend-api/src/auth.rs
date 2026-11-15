@@ -11,6 +11,23 @@ use mock_resend_core::{ApiKey, Error as EngineError};
 
 use crate::error::ApiError;
 
+/// Reads the API key from a header map, without producing an error.
+///
+/// Used by middleware that has to run before the handler rejects an unauthenticated
+/// request: there is no key to charge a rate limit against, and refusing here would
+/// hide Resend's `missing_api_key` behind a different error.
+#[must_use]
+pub fn bearer_key(headers: &axum::http::HeaderMap) -> Option<ApiKey> {
+    let header = headers.get(AUTHORIZATION)?.to_str().ok()?;
+
+    let credential = header
+        .split_once(' ')
+        .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
+        .map(|(_, credential)| credential.trim())?;
+
+    ApiKey::parse(credential).ok()
+}
+
 /// The API key a request works under, pulled from `Authorization: Bearer <key>`.
 ///
 /// Rejects with `401 missing_api_key` when the header is absent, is not a `Bearer`
@@ -27,23 +44,11 @@ where
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let header = parts
-            .headers
-            .get(AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .ok_or_else(|| ApiError::from(EngineError::MissingApiKey))?;
-
         // `Bearer` is case-insensitive per RFC 7235, and a client that sends `bearer`
         // should not get a different answer here than it gets from the real API.
-        let credential = header
-            .split_once(' ')
-            .filter(|(scheme, _)| scheme.eq_ignore_ascii_case("bearer"))
-            .map(|(_, credential)| credential.trim())
-            .ok_or_else(|| ApiError::from(EngineError::MissingApiKey))?;
-
-        let key = ApiKey::parse(credential)?;
-
-        Ok(Self(key))
+        bearer_key(&parts.headers)
+            .map(Self)
+            .ok_or_else(|| ApiError::from(EngineError::MissingApiKey))
     }
 }
 

@@ -66,6 +66,13 @@ pub enum Error {
     #[error("Same idempotency key used with a different request payload.")]
     InvalidIdempotentRequest,
 
+    /// A fault rule fired, so this error was injected rather than earned.
+    ///
+    /// Carries the whole Resend error, because the rule chose it: the name and status a
+    /// caller sees come from the test that asked for them, not from this enum.
+    #[error("{}", .0.message)]
+    Injected(crate::fault::ResendError),
+
     /// The storage backend failed.
     ///
     /// Carries a string rather than the source error so that the variant stays the same

@@ -93,11 +93,12 @@ Configuration
 | `--host <addr>` | `0.0.0.0` | Address to bind the API to | ✅ |
 | `--port` | `9100` | Resend HTTP API port | ✅ |
 | `--log <level>` | `info` | `error`, `warn`, `info`, `debug`, `trace` | ✅ |
+| `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers | ✅ |
+| `--delivery-delay <ms>` | off | Deliver a captured message this long after it is sent | ✅ |
 | `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written | planned |
 | `--in-memory` | off | Keep everything in RAM and discard it on exit | planned |
 | `--smtp-port` | `1025` | SMTP listener port | planned |
 | `--no-smtp` | off | Disable the SMTP listener | planned |
-| `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers | planned |
 
 Every flag has a `MOCK_RESEND_`-prefixed environment variable equivalent, which is usually
 easier in a compose file. `RUST_LOG` overrides `--log` with a full filter directive if you
@@ -109,7 +110,10 @@ writer rather than ahead of it.
 
 Rate limiting is **off by default** even though real Resend limits you to 10 requests per
 second. A test suite that trips a rate limit it did not ask for is a flaky test suite; a
-suite that wants to prove its retry logic works turns the limit on deliberately.
+suite that wants to prove its retry logic works turns the limit on deliberately. The same
+reasoning applies to `--delivery-delay`: with it unset a captured message stays at `sent`
+until something advances it, so a test asserting "it was accepted" cannot lose a race with
+the delivery ticker.
 
 
 Architecture
@@ -139,10 +143,14 @@ its namespace on first use, so isolation costs nothing:
 const resend = new Resend("re_test_checkout_flow", { baseUrl: BASE_URL });
 ```
 
-Two things make it pleasant in a suite: `POST /_admin/reset` wipes everything or a single
-key, far faster than restarting a container; and per-key fault injection lets you make
-sends fail with a given Resend error, or make a delivery bounce, so testing your error
-handling stops needing a broken mail server.
+Two things make it pleasant in a suite: resetting a key wipes its mail, its replay records
+and its fault rules in one go, far faster than restarting a container; and per-key fault
+injection lets you make sends fail with a given Resend error, or make a delivery bounce, so
+testing your error handling stops needing a broken mail server.
+
+A fault may only name an error real Resend has. Injecting `everything_is_broken` is
+refused, because a test that passes against an invented error name is a test that proves
+nothing.
 
 Rust users can skip the container and use `mock-resend-testkit` to spawn an instance
 in-process on a random port.
@@ -159,7 +167,8 @@ Supported surface
 | Manage | `PATCH /emails/{id}`, `POST /emails/{id}/cancel` | ✅ |
 | Protocol | `Bearer` auth, per-key isolation | ✅ |
 | Protocol | `Idempotency-Key`, with the 24 hour replay window | ✅ |
-| Protocol | `ratelimit-*` headers | planned |
+| Protocol | `--rate-limit` with the `ratelimit-*` headers | ✅ |
+| Faults | Per-key error injection and delivery outcomes | ✅ |
 | SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
 | Admin | `POST /_admin/reset`, list captured mail, advance an event, inject a fault | planned |
 

@@ -36,7 +36,14 @@ async fn main() -> ExitCode {
 
 /// Binds the API listener and serves until the process is asked to stop.
 async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let engine = Engine::in_memory();
+    let delivery_delay = cli
+        .delivery_delay
+        .map(|millis| chrono::Duration::milliseconds(i64::from(millis)));
+
+    let engine = Engine::in_memory()
+        .with_rate_limit(cli.rate_limit)
+        .with_delivery_delay(delivery_delay);
+
     let address = SocketAddr::new(cli.host, cli.port);
 
     let listener = TcpListener::bind(address)
@@ -55,6 +62,13 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
     tracing::warn!(
         "captured mail is held in memory and goes away with this process; it is never delivered"
     );
+
+    if let Some(limit) = cli.rate_limit {
+        tracing::info!("rate limiting at {limit} requests per second per API key");
+    }
+    if let Some(delay) = cli.delivery_delay {
+        tracing::info!("delivering captured mail {delay}ms after it is sent");
+    }
 
     axum::serve(listener, mock_resend_api::router(engine))
         .with_graceful_shutdown(shutdown())

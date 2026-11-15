@@ -26,6 +26,27 @@ pub struct ApiError {
     message: String,
 }
 
+/// Interns an injected error's name against Resend's catalogue.
+///
+/// [`ApiError`] holds a `&'static str` so that no handler can put a formatted string in
+/// the `name` field by accident. A fault may only inject a catalogued name, which the
+/// engine already enforced, so the lookup always succeeds; `application_error` is the
+/// safe fallback if that ever stops being true.
+fn resend_name(name: &str) -> &'static str {
+    if let Some((known, _)) = mock_resend_core::RESEND_ERRORS
+        .iter()
+        .find(|(known, _)| *known == name)
+    {
+        return known;
+    }
+
+    match name {
+        "service_unavailable" => "service_unavailable",
+        "dns_lookup_failed" => "dns_lookup_failed",
+        _ => "application_error",
+    }
+}
+
 /// The wire form of an error.
 #[derive(Debug, Serialize)]
 struct ErrorBody<'a> {
@@ -94,6 +115,19 @@ impl From<EngineError> for ApiError {
         // rule that produced it rather than here.
         let message = error.to_string();
 
+        // An injected fault carries its own name and status, chosen by the rule that
+        // fired. Mapping it through the table below would discard the choice.
+        if let EngineError::Injected(injected) = error {
+            let status =
+                StatusCode::from_u16(injected.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+
+            return Self {
+                status,
+                name: resend_name(&injected.name),
+                message: injected.message,
+            };
+        }
+
         let (status, name) = match error {
             EngineError::MissingRequiredField { .. } => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "missing_required_field")
@@ -120,6 +154,8 @@ impl From<EngineError> for ApiError {
             }
             // A storage failure is a bug here, not something the caller did.
             EngineError::Store(_) => (StatusCode::INTERNAL_SERVER_ERROR, "application_error"),
+            // Handled above, before the message was taken.
+            EngineError::Injected(_) => unreachable!("an injected fault is mapped above"),
         };
 
         Self::new(status, name, message)

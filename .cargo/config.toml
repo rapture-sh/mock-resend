@@ -1,2 +1,8 @@
 [alias]
 xtask = "run --package xtask --release --"
+
+[env]
+# `resend-rs` throttles itself to 9 requests per 1.1 seconds unless told otherwise, which
+# is sensible against the real API and pure waiting against a local instance. The
+# conformance suite would spend most of its wall clock asleep without this.
+RESEND_RATE_LIMIT = "100000"

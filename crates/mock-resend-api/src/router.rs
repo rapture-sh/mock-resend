@@ -25,6 +25,10 @@ pub fn router(engine: Engine) -> Router {
         .route("/emails/{id}/cancel", post(emails::cancel_email))
         .fallback(|| async { ApiError::unknown_endpoint() })
         .method_not_allowed_fallback(|| async { ApiError::method_not_allowed() })
+        .layer(axum::middleware::from_fn_with_state(
+            engine.clone(),
+            crate::ratelimit::enforce,
+        ))
         .with_state(engine)
 }
 

@@ -12,6 +12,7 @@ mock-resend-api.workspace = true
 mock-resend-core.workspace = true
 
 axum.workspace = true
+chrono.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tracing.workspace = true

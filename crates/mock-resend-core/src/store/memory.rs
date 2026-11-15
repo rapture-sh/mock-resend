@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 
 use crate::error::{Error, Result};
 use crate::model::{ApiKey, EmailId, Message};
@@ -111,18 +110,13 @@ impl Store for MemoryStore {
         Ok(())
     }
 
-    async fn due_scheduled(&self, now: DateTime<Utc>) -> Result<Vec<Message>> {
+    async fn in_flight(&self) -> Result<Vec<Message>> {
         let namespaces = self.namespaces.read().map_err(|_| poisoned())?;
 
         Ok(namespaces
             .values()
             .flat_map(|namespace| namespace.messages.values())
-            .filter(|message| message.last_event.is_scheduled())
-            .filter(|message| {
-                message
-                    .scheduled_at
-                    .is_some_and(|scheduled_at| scheduled_at <= now)
-            })
+            .filter(|message| !message.last_event.is_terminal())
             .cloned()
             .collect())
     }

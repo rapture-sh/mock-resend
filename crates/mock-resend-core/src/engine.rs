@@ -6,8 +6,11 @@
 
 use std::sync::Arc;
 
+use chrono::{DateTime, Duration, Utc};
+
 use crate::error::{Error, Result};
 use crate::events::EmailEvent;
+use crate::fault::{Allowance, FaultTarget, Faults, RateLimiter};
 use crate::idempotency::{Begin, Idempotency, IdempotencyKey, Outcome as IdempotentOutcome};
 use crate::mailbox::SendEmail;
 use crate::model::{ApiKey, EmailId, Message};
@@ -23,6 +26,11 @@ pub struct Engine {
     store: Arc<dyn Store>,
     clock: Arc<dyn Clock>,
     idempotency: Arc<Idempotency>,
+    faults: Arc<Faults>,
+    rate_limiter: Arc<RateLimiter>,
+    /// How long after being handed off a message is delivered. `None` turns automatic
+    /// delivery off, which is the default.
+    delivery_delay: Option<Duration>,
 }
 
 impl Engine {
@@ -39,7 +47,30 @@ impl Engine {
             store,
             clock,
             idempotency: Arc::new(Idempotency::new()),
+            faults: Arc::new(Faults::new()),
+            rate_limiter: Arc::new(RateLimiter::new(None)),
+            delivery_delay: None,
         }
+    }
+
+    /// Limits every key to `limit` requests a second.
+    ///
+    /// Off by default, even though real Resend allows 10 a second: a test suite that
+    /// trips a limit it did not ask for is a flaky test suite.
+    #[must_use]
+    pub fn with_rate_limit(mut self, limit: Option<u32>) -> Self {
+        self.rate_limiter = Arc::new(RateLimiter::new(limit));
+        self
+    }
+
+    /// Delivers a message `delay` after it is handed off.
+    ///
+    /// Off by default, so a message stays at `sent` until something advances it. A
+    /// suite that wants the full lifecycle without driving each step turns this on.
+    #[must_use]
+    pub fn with_delivery_delay(mut self, delay: Option<Duration>) -> Self {
+        self.delivery_delay = delay;
+        self
     }
 
     /// The engine's current time.
@@ -47,7 +78,7 @@ impl Engine {
     /// Comes from the clock, which a test can move. Nothing reads the wall clock
     /// directly.
     #[must_use]
-    pub fn now(&self) -> chrono::DateTime<chrono::Utc> {
+    pub fn now(&self) -> DateTime<Utc> {
         self.clock.now()
     }
 
@@ -325,7 +356,7 @@ impl Engine {
         &self,
         key: &ApiKey,
         id: &EmailId,
-        scheduled_at: chrono::DateTime<chrono::Utc>,
+        scheduled_at: DateTime<Utc>,
     ) -> Result<EmailId> {
         let mut message = self.get_email(key, id).await?;
 
@@ -367,33 +398,43 @@ impl Engine {
         Ok(*id)
     }
 
-    /// Sends every scheduled message whose time has come.
+    /// Moves time-driven mail along: scheduled sends that are due, and sent messages
+    /// whose delivery delay has elapsed.
     ///
     /// Called by the server on an interval and by the admin API after the clock moves,
     /// so a test advances the clock and ticks rather than sleeping. Returns the
     /// transitions that happened, which is what the webhook sender needs.
+    ///
+    /// Automatic delivery is off unless a delivery delay is configured, globally or for
+    /// the key. With it off a message stays at `sent` until something advances it, which
+    /// keeps a test that only checks "was it accepted" from racing the ticker.
     ///
     /// # Errors
     ///
     /// [`Error::Store`] if the backend fails.
     pub async fn tick(&self) -> Result<Vec<Transition>> {
         let now = self.clock.now();
-        let due = self.store.due_scheduled(now).await?;
+        let in_flight = self.store.in_flight().await?;
 
         let mut transitions = Vec::new();
-        for mut message in due {
-            if !message.last_event.can_transition_to(EmailEvent::Sent) {
+        for mut message in in_flight {
+            let from = message.last_event;
+
+            let Some(to) = self.next_event_for(&message, now)? else {
+                continue;
+            };
+
+            if !from.can_transition_to(to) {
                 continue;
             }
 
-            let from = message.last_event;
-            message.last_event = EmailEvent::Sent;
+            message.last_event = to;
 
             let transition = Transition {
                 key: message.key.clone(),
                 id: message.id,
                 from,
-                to: EmailEvent::Sent,
+                to,
                 at: now,
             };
 
@@ -402,6 +443,76 @@ impl Engine {
         }
 
         Ok(transitions)
+    }
+
+    /// What `message` should become by `now`, if anything.
+    fn next_event_for(&self, message: &Message, now: DateTime<Utc>) -> Result<Option<EmailEvent>> {
+        match message.last_event {
+            EmailEvent::Scheduled => Ok(message
+                .scheduled_at
+                .is_some_and(|scheduled_at| scheduled_at <= now)
+                .then_some(EmailEvent::Sent)),
+
+            EmailEvent::Sent => {
+                let faults = self.faults.for_key(&message.key)?;
+
+                let Some(delay) = faults.delivery_delay.or(self.delivery_delay) else {
+                    return Ok(None);
+                };
+
+                // Delivery is measured from when the message was handed off, which for a
+                // scheduled send is its send time rather than when it was captured.
+                let sent_at = message.scheduled_at.unwrap_or(message.created_at);
+
+                if now.signed_duration_since(sent_at) < delay {
+                    return Ok(None);
+                }
+
+                // A delivery rule is what makes a bounce testable without a mail server
+                // that misbehaves on request.
+                Ok(Some(
+                    faults
+                        .delivery
+                        .map_or(EmailEvent::Delivered, |rule| rule.outcome),
+                ))
+            }
+
+            _ => Ok(None),
+        }
+    }
+
+    /// Consults `key`'s fault rules for a request of this kind.
+    ///
+    /// Called once per request, early, before any work. An endpoint that skips this
+    /// cannot be tested for error handling.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Injected`] when a rule fires, carrying the error the rule chose.
+    pub fn check_fault(&self, key: &ApiKey, target: FaultTarget) -> Result<()> {
+        match self.faults.take(key, target)? {
+            Some(error) => Err(Error::Injected(error)),
+            None => Ok(()),
+        }
+    }
+
+    /// Counts a request against `key`'s rate limit.
+    ///
+    /// Returns `None` when no limit is configured, so a caller can leave the
+    /// `ratelimit-*` headers off entirely rather than reporting a limit that does not
+    /// exist.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] if the limiter's lock is poisoned.
+    pub fn check_rate_limit(&self, key: &ApiKey) -> Result<Option<Allowance>> {
+        self.rate_limiter.check(key, self.clock.now())
+    }
+
+    /// The fault register, for the admin API to configure.
+    #[must_use]
+    pub fn faults(&self) -> &Faults {
+        &self.faults
     }
 
     /// Moves a captured message to `next`, if the lifecycle allows it.
@@ -448,10 +559,13 @@ impl Engine {
     ///
     /// [`Error::Store`] if the backend fails.
     pub async fn reset(&self, key: Option<&ApiKey>) -> Result<()> {
-        // The idempotency register goes too. A key whose mail was wiped but whose replay
+        // Everything scoped to the key goes, not just the mail. A key whose replay
         // records survived would answer the next identical send with an id that no
-        // longer resolves.
+        // longer resolves, and a surviving fault rule would break the next test to pick
+        // that key up.
         self.idempotency.reset(key)?;
+        self.faults.reset(key)?;
+        self.rate_limiter.reset(key)?;
         self.store.reset(key).await
     }
 }
@@ -520,7 +634,7 @@ pub struct Transition {
     /// The event it is at now.
     pub to: EmailEvent,
     /// When it moved, by the engine's clock.
-    pub at: chrono::DateTime<chrono::Utc>,
+    pub at: DateTime<Utc>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -1729,5 +1843,361 @@ mod idempotent_sends {
             first, second,
             "replaying an id whose message was wiped would hand back a dangling id"
         );
+    }
+}
+
+#[cfg(test)]
+mod automatic_delivery {
+    use std::sync::Arc;
+
+    use chrono::Duration;
+
+    use super::Engine;
+    use crate::events::EmailEvent;
+    use crate::fault::DeliveryRule;
+    use crate::mailbox::SendEmail;
+    use crate::model::ApiKey;
+    use crate::schedule::{Clock, TestClock};
+    use crate::store::memory::MemoryStore;
+
+    fn engine(delay: Option<Duration>) -> (Engine, Arc<TestClock>) {
+        let clock = Arc::new(TestClock::new());
+        let shared: Arc<dyn Clock> = Arc::clone(&clock) as Arc<dyn Clock>;
+        let engine = Engine::new(Arc::new(MemoryStore::new()), shared).with_delivery_delay(delay);
+
+        (engine, clock)
+    }
+
+    fn key(name: &str) -> ApiKey {
+        ApiKey::parse(name).expect("the test key is re_-prefixed")
+    }
+
+    fn request() -> SendEmail {
+        let mut request = SendEmail::new(
+            "Acme <onboarding@example.com>",
+            vec!["delivered@example.org".to_owned()],
+            "Hello World",
+        );
+        request.text = Some("It works".to_owned());
+        request
+    }
+
+    #[tokio::test]
+    async fn should_leave_a_message_at_sent_when_no_delay_is_configured() {
+        let (engine, clock) = engine(None);
+        let key = key("re_should_leave_a_message_at_sent");
+
+        let id = engine.send_email(&key, request()).await.expect("captured");
+
+        clock.advance_secs(86_400);
+        let transitions = engine.tick().await.expect("tick");
+
+        assert!(
+            transitions.is_empty(),
+            "automatic delivery is off by default, so nothing should move"
+        );
+        assert_eq!(
+            engine
+                .get_email(&key, &id)
+                .await
+                .expect("it is there")
+                .last_event,
+            EmailEvent::Sent
+        );
+    }
+
+    #[tokio::test]
+    async fn should_deliver_a_message_once_the_delay_has_elapsed() {
+        let (engine, clock) = engine(Some(Duration::seconds(30)));
+        let key = key("re_should_deliver_after_the_delay");
+
+        let id = engine.send_email(&key, request()).await.expect("captured");
+
+        clock.advance_secs(30);
+        let transitions = engine.tick().await.expect("tick");
+
+        assert_eq!(transitions.len(), 1);
+        assert_eq!(transitions[0].to, EmailEvent::Delivered);
+        assert_eq!(
+            engine
+                .get_email(&key, &id)
+                .await
+                .expect("it is there")
+                .last_event,
+            EmailEvent::Delivered
+        );
+    }
+
+    #[tokio::test]
+    async fn should_not_deliver_before_the_delay_has_elapsed() {
+        let (engine, clock) = engine(Some(Duration::seconds(30)));
+        let key = key("re_should_not_deliver_before_the_delay");
+
+        let _id = engine.send_email(&key, request()).await.expect("captured");
+
+        clock.advance_secs(29);
+
+        assert!(engine.tick().await.expect("tick").is_empty());
+    }
+
+    #[tokio::test]
+    async fn should_deliver_only_once() {
+        let (engine, clock) = engine(Some(Duration::seconds(1)));
+        let key = key("re_should_deliver_only_once");
+
+        let _id = engine.send_email(&key, request()).await.expect("captured");
+
+        clock.advance_secs(10);
+
+        assert_eq!(engine.tick().await.expect("tick").len(), 1);
+        assert!(engine.tick().await.expect("tick").is_empty());
+    }
+
+    #[tokio::test]
+    async fn should_measure_a_scheduled_sends_delay_from_its_send_time() {
+        let (engine, clock) = engine(Some(Duration::seconds(30)));
+        let key = key("re_should_measure_delay_from_send_time");
+
+        let mut request = request();
+        request.scheduled_at = Some(clock.now() + Duration::hours(1));
+        let id = engine.send_email(&key, request).await.expect("captured");
+
+        // Past the send time, but not yet 30 seconds past it.
+        clock.advance_secs(3_610);
+
+        let sent = engine.tick().await.expect("tick");
+        assert_eq!(sent.len(), 1);
+        assert_eq!(sent[0].to, EmailEvent::Sent);
+
+        assert!(
+            engine.tick().await.expect("tick").is_empty(),
+            "delivery is measured from the send time, not from capture"
+        );
+
+        clock.advance_secs(30);
+        assert_eq!(
+            engine.tick().await.expect("tick")[0].to,
+            EmailEvent::Delivered
+        );
+        assert_eq!(
+            engine
+                .get_email(&key, &id)
+                .await
+                .expect("it is there")
+                .last_event,
+            EmailEvent::Delivered
+        );
+    }
+
+    #[tokio::test]
+    async fn should_bounce_instead_of_delivering_when_a_rule_says_so() {
+        let (engine, clock) = engine(Some(Duration::seconds(1)));
+        let key = key("re_should_bounce_when_a_rule_says_so");
+
+        engine
+            .faults()
+            .set_delivery(
+                &key,
+                Some(DeliveryRule {
+                    outcome: EmailEvent::Bounced,
+                }),
+            )
+            .expect("set");
+
+        let id = engine.send_email(&key, request()).await.expect("captured");
+
+        clock.advance_secs(5);
+        let transitions = engine.tick().await.expect("tick");
+
+        assert_eq!(transitions[0].to, EmailEvent::Bounced);
+        assert_eq!(
+            engine
+                .get_email(&key, &id)
+                .await
+                .expect("it is there")
+                .last_event,
+            EmailEvent::Bounced
+        );
+    }
+
+    #[tokio::test]
+    async fn should_let_a_key_set_its_own_delivery_delay() {
+        let (engine, clock) = engine(None);
+        let key = key("re_should_let_a_key_set_its_own_delay");
+
+        engine
+            .faults()
+            .set_delivery_delay(&key, Some(Duration::seconds(5)))
+            .expect("set");
+
+        let _id = engine.send_email(&key, request()).await.expect("captured");
+
+        clock.advance_secs(5);
+
+        assert_eq!(
+            engine.tick().await.expect("tick")[0].to,
+            EmailEvent::Delivered,
+            "a per-key delay should apply even with automatic delivery off globally"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_not_deliver_under_a_key_that_has_no_delay_of_its_own() {
+        let (engine, clock) = engine(None);
+        let configured = key("re_should_not_deliver_without_a_delay_configured");
+        let other = key("re_should_not_deliver_without_a_delay_other");
+
+        engine
+            .faults()
+            .set_delivery_delay(&configured, Some(Duration::seconds(1)))
+            .expect("set");
+
+        let _mine = engine
+            .send_email(&configured, request())
+            .await
+            .expect("captured");
+        let theirs = engine
+            .send_email(&other, request())
+            .await
+            .expect("captured");
+
+        clock.advance_secs(5);
+        let _transitions = engine.tick().await.expect("tick");
+
+        assert_eq!(
+            engine
+                .get_email(&other, &theirs)
+                .await
+                .expect("it is there")
+                .last_event,
+            EmailEvent::Sent,
+            "one key's delivery settings must not reach another"
+        );
+    }
+}
+
+#[cfg(test)]
+mod injected_faults {
+    use std::sync::Arc;
+
+    use super::Engine;
+    use crate::error::Error;
+    use crate::fault::{FaultRule, FaultTarget, ResendError};
+    use crate::model::ApiKey;
+    use crate::schedule::{Clock, TestClock};
+    use crate::store::memory::MemoryStore;
+
+    fn engine() -> Engine {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+
+        Engine::new(Arc::new(MemoryStore::new()), clock)
+    }
+
+    fn key(name: &str) -> ApiKey {
+        ApiKey::parse(name).expect("the test key is re_-prefixed")
+    }
+
+    fn rule(remaining: Option<u32>) -> FaultRule {
+        FaultRule {
+            target: FaultTarget::Send,
+            error: ResendError {
+                name: "rate_limit_exceeded".to_owned(),
+                status: 429,
+                message: "Too many requests.".to_owned(),
+            },
+            remaining,
+        }
+    }
+
+    #[tokio::test]
+    async fn should_pass_a_request_through_when_nothing_is_faulted() {
+        let engine = engine();
+
+        assert!(
+            engine
+                .check_fault(&key("re_should_pass_through_unfaulted"), FaultTarget::Send)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn should_inject_the_error_a_rule_names() {
+        let engine = engine();
+        let key = key("re_should_inject_the_named_error");
+
+        engine.faults().add_rule(&key, rule(None)).expect("added");
+
+        let error = engine
+            .check_fault(&key, FaultTarget::Send)
+            .expect_err("the rule fires");
+
+        let Error::Injected(injected) = error else {
+            panic!("expected an injected error, got {error:?}");
+        };
+
+        assert_eq!(injected.name, "rate_limit_exceeded");
+        assert_eq!(injected.status, 429);
+    }
+
+    #[tokio::test]
+    async fn should_stop_injecting_once_a_counted_rule_runs_out() {
+        let engine = engine();
+        let key = key("re_should_stop_injecting_after_the_count");
+
+        engine
+            .faults()
+            .add_rule(&key, rule(Some(1)))
+            .expect("added");
+
+        assert!(engine.check_fault(&key, FaultTarget::Send).is_err());
+        assert!(
+            engine.check_fault(&key, FaultTarget::Send).is_ok(),
+            "fail-once-then-succeed is the case most retry logic has to handle"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_clear_faults_when_the_key_is_reset() {
+        let engine = engine();
+        let key = key("re_should_clear_faults_on_reset");
+
+        engine.faults().add_rule(&key, rule(None)).expect("added");
+        engine.reset(Some(&key)).await.expect("reset");
+
+        assert!(
+            engine.check_fault(&key, FaultTarget::Send).is_ok(),
+            "a surviving fault would break the next test to pick this key up"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_report_no_allowance_without_a_configured_limit() {
+        let engine = engine();
+
+        assert_eq!(
+            engine
+                .check_rate_limit(&key("re_should_report_no_allowance_engine"))
+                .expect("checks"),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn should_refuse_a_request_past_the_configured_limit() {
+        let clock: Arc<dyn Clock> = Arc::new(TestClock::new());
+        let engine = Engine::new(Arc::new(MemoryStore::new()), clock).with_rate_limit(Some(1));
+        let key = key("re_should_refuse_past_the_limit_engine");
+
+        let first = engine
+            .check_rate_limit(&key)
+            .expect("checks")
+            .expect("configured");
+        let second = engine
+            .check_rate_limit(&key)
+            .expect("checks")
+            .expect("configured");
+
+        assert!(first.allowed);
+        assert!(!second.allowed);
     }
 }

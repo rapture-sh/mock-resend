@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, body::Bytes};
-use mock_resend_core::{BatchValidation, EmailId, Engine, IdempotencyKey};
+use mock_resend_core::{BatchValidation, EmailId, Engine, FaultTarget, IdempotencyKey};
 
 use crate::auth::AuthenticatedKey;
 use crate::error::ApiError;
@@ -53,6 +53,11 @@ pub async fn send_email(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    // Faults are consulted first, before the body is even parsed: a rule that only
+    // fired for well-formed requests could not be used to test a client's handling of a
+    // server that is simply down.
+    engine.check_fault(&key, FaultTarget::Send)?;
+
     let idempotency = idempotency_key(&headers)?;
 
     // The body is taken as bytes and parsed here rather than through `Json<T>`, so that
@@ -85,6 +90,8 @@ pub async fn send_batch(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    engine.check_fault(&key, FaultTarget::Send)?;
+
     let requests: Vec<SendEmailRequest> = parse_body(&body)?;
 
     let validation = BatchValidation::parse(
@@ -126,6 +133,8 @@ pub async fn get_email(
     AuthenticatedKey(key): AuthenticatedKey,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
+    engine.check_fault(&key, FaultTarget::Retrieve)?;
+
     let id = parse_id(&id)?;
     let message = engine.get_email(&key, &id).await?;
 
