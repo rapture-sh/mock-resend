@@ -18,7 +18,8 @@ use crate::timestamp;
 use crate::wire::{
     AdvanceClockRequest, AdvanceClockResponse, AdvanceEventRequest, CapturedEmail, DeliveryRequest,
     EmailListResponse, FaultRequest, HealthResponse, KeyQuery, ResetResponse, ScopeRequest,
-    StatsResponse, TransitionResponse, WebhookListResponse, WebhookRequest, WebhookView,
+    StatsResponse, StatusResponse, TransitionResponse, WebhookListResponse, WebhookRequest,
+    WebhookView,
 };
 
 /// `GET /_admin/health`
@@ -51,7 +52,14 @@ pub async fn reset(
         .as_ref()
         .map_or_else(|| "all".to_owned(), |key| key.as_str().to_owned());
 
-    tracing::info!(scope = %scope, "reset");
+    // The redacted form. `ApiKey`'s `Display` exists to keep the key out of logs — it is
+    // frequently a test name, and a test name is one dereference away from the mail it
+    // captured. The caller gets the real scope back in the response, where it is theirs
+    // already.
+    match &key {
+        Some(key) => tracing::info!(scope = %key, "reset one key"),
+        None => tracing::info!("reset every key"),
+    }
 
     Ok(Json(ResetResponse { scope }))
 }
@@ -180,11 +188,7 @@ pub async fn add_fault(State(engine): State<Engine>, body: Bytes) -> Result<Resp
 
     tracing::info!(error = %request.error, target = target.as_str(), "added a fault rule");
 
-    Ok((
-        StatusCode::CREATED,
-        Json(serde_json::json!({ "status": "added" })),
-    )
-        .into_response())
+    Ok((StatusCode::CREATED, Json(StatusResponse::added())).into_response())
 }
 
 /// `DELETE /_admin/faults?api_key=re_...`
@@ -193,12 +197,12 @@ pub async fn add_fault(State(engine): State<Engine>, body: Bytes) -> Result<Resp
 pub async fn clear_faults(
     State(engine): State<Engine>,
     Query(query): Query<KeyQuery>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let key = query.key()?;
 
     engine.faults().reset(Some(&key))?;
 
-    Ok(Json(serde_json::json!({ "status": "cleared" })))
+    Ok(Json(StatusResponse::cleared()))
 }
 
 /// `POST /_admin/delivery`
@@ -208,7 +212,7 @@ pub async fn clear_faults(
 pub async fn set_delivery(
     State(engine): State<Engine>,
     body: Bytes,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let request: DeliveryRequest = parse_body(&body)?;
     let key = mock_resend_core::ApiKey::parse(&request.api_key)?;
 
@@ -233,7 +237,7 @@ pub async fn set_delivery(
             .set_delivery_delay(&key, Some(chrono::Duration::milliseconds(delay)))?;
     }
 
-    Ok(Json(serde_json::json!({ "status": "set" })))
+    Ok(Json(StatusResponse::set()))
 }
 
 /// `POST /_admin/webhooks`
@@ -287,13 +291,13 @@ pub async fn remove_webhook(
     State(engine): State<Engine>,
     Path(id): Path<String>,
     Query(query): Query<KeyQuery>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+) -> Result<Json<StatusResponse>, ApiError> {
     let key = query.key()?;
     let id = WebhookId::parse(&id)?;
 
     engine.webhooks().remove(&key, &id)?;
 
-    Ok(Json(serde_json::json!({ "status": "removed" })))
+    Ok(Json(StatusResponse::removed()))
 }
 
 /// `GET /_admin/stats?api_key=re_...`

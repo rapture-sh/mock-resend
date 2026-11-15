@@ -96,10 +96,12 @@ impl fmt::Display for ApiKey {
 pub enum AttachmentSource {
     /// Inline bytes, decoded from the request.
     Content(Bytes),
-    /// A URL the caller chose, which is **not** fetched here.
+    /// A URL the caller chose, which is **never** fetched.
     ///
-    /// Fetching it is a server-side request forgery on the developer's machine, so it
-    /// happens only in `mock-resend-webhooks`, through the one guarded client.
+    /// Recorded and reported, and nothing in the workspace requests it: fetching a URL
+    /// the caller chose is a server-side request forgery on the developer's machine. If
+    /// that ever changes it goes through the one guarded client in
+    /// `mock-resend-webhooks` and nowhere else.
     Path(String),
 }
 

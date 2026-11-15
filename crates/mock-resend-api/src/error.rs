@@ -155,7 +155,10 @@ impl From<EngineError> for ApiError {
             // A storage failure is a bug here, not something the caller did.
             EngineError::Store(_) => (StatusCode::INTERNAL_SERVER_ERROR, "application_error"),
             // Handled above, before the message was taken.
-            EngineError::Injected(_) => unreachable!("an injected fault is mapped above"),
+            // Handled above, before the message was taken. Kept as a real arm rather
+            // than an `unreachable!` so that nothing in a request path can panic, even
+            // somewhere the compiler can prove it will not.
+            EngineError::Injected(_) => (StatusCode::INTERNAL_SERVER_ERROR, "application_error"),
         };
 
         Self::new(status, name, message)

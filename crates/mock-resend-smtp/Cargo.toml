@@ -15,4 +15,6 @@ tokio.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["io-util"] }
+# `test-util` pauses the runtime clock, so the idle timeout is tested by advancing
+# time rather than by waiting two minutes for it.
+tokio = { workspace = true, features = ["io-util", "test-util"] }

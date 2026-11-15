@@ -42,7 +42,7 @@ pub struct ResendError {
 /// "500 Service Unavailable", which is self-contradictory, and `dns_lookup_failed`
 /// beside it is headed 503. 503 is used here for both, and a rule may override the
 /// status if you know better.
-pub const RESEND_ERRORS: [(&str, u16); 21] = [
+pub const RESEND_ERRORS: [(&str, u16); 23] = [
     ("invalid_idempotency_key", 400),
     ("validation_error", 400),
     ("missing_api_key", 401),
@@ -60,6 +60,8 @@ pub const RESEND_ERRORS: [(&str, u16); 21] = [
     ("invalid_parameter", 422),
     ("missing_required_field", 422),
     ("missing_required_parameter", 422),
+    ("forge_unavailable", 422),
+    ("return_path_unavailable", 422),
     ("daily_quota_exceeded", 429),
     ("monthly_quota_exceeded", 429),
     ("rate_limit_exceeded", 429),
@@ -901,6 +903,53 @@ mod rate_limiter {
 
         assert!(!allowance.allowed);
         assert_eq!(allowance.limit, 0);
+    }
+
+    #[test]
+    fn should_keep_refusing_until_the_window_has_actually_ended() {
+        let limiter = RateLimiter::new(Some(1));
+        let key = key("re_should_keep_refusing_inside_the_window");
+
+        let _spent = limiter.check(&key, now());
+
+        // A millisecond short of the window ending. Rounding this up would serve two
+        // requests inside a window of one, which is the whole thing a limit is for.
+        let refused = limiter
+            .check(&key, now() + Duration::milliseconds(999))
+            .expect("checks")
+            .expect("configured");
+
+        assert!(!refused.allowed);
+        assert_eq!(refused.remaining, 0);
+
+        let served = limiter
+            .check(&key, now() + Duration::milliseconds(1_000))
+            .expect("checks")
+            .expect("configured");
+
+        assert!(served.allowed, "the window is over at exactly one second");
+    }
+
+    #[test]
+    fn should_measure_the_window_from_its_first_request_not_from_the_last_refusal() {
+        let limiter = RateLimiter::new(Some(1));
+        let key = key("re_should_measure_the_window_from_its_start");
+
+        let _spent = limiter.check(&key, now());
+
+        // A client hammering a key it has exhausted must not push the window out in
+        // front of itself, or it could never recover.
+        for offset in [100, 500, 900] {
+            let _refused = limiter.check(&key, now() + Duration::milliseconds(offset));
+        }
+
+        assert!(
+            limiter
+                .check(&key, now() + Duration::milliseconds(1_000))
+                .expect("checks")
+                .expect("configured")
+                .allowed
+        );
     }
 
     #[test]

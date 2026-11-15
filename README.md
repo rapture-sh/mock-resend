@@ -230,6 +230,16 @@ over:
   `validation_error`.** Resend's error for that case is not documented and we have not
   confirmed it against the live API, so the name is a considered choice rather than a
   verified one. The 400 and the name may change once it is checked.
+- **A batched message reports `last_event: "sent"`, not `"queued"`.** Resend reports
+  `queued` for broadcasts and batches. Matching it would mean an intermediate state that
+  the real API passes through in milliseconds and that a test asserting straight after a
+  batch send would race, which is the same reason rate limiting and automatic delivery
+  are off by default.
+- **Two validation rules here are not confirmed against the live API.** A body with none
+  of `html`, `text` or `template` is refused with `validation_error`, and `template`
+  combined with `html` or `text` is refused as well. Neither is documented by Resend and
+  neither has been checked against it, so treat both as this project's reading rather
+  than as fidelity. Tell us if you know better.
 - **No `User-Agent` requirement.** Whether real Resend rejects a request without one is
   not something we have confirmed against the live API, so nothing is enforced. Being
   permissive fails open; guessing would fail a request the real API accepts.

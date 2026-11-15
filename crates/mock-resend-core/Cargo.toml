@@ -18,7 +18,6 @@ chrono.workspace = true
 mail-builder.workspace = true
 mail-parser.workspace = true
 thiserror.workspace = true
-# `sync` only, for the channel transitions are announced on. No sockets here.
 # `sync` for the channel transitions are announced on, `fs` for the disk backend.
 # No sockets here: the engine never opens one.
 tokio = { workspace = true, default-features = false, features = ["fs", "sync"] }

@@ -290,6 +290,11 @@ where
                         reply(writer, "552 Message too large").await?;
                         return Ok(());
                     }
+                    Err(DataError::LineTooLong) => {
+                        transaction.reset();
+                        reply(writer, "500 Line too long").await?;
+                        return Ok(());
+                    }
                     Err(DataError::Closed) => return Ok(()),
                 }
             }
@@ -318,6 +323,8 @@ where
 enum DataError {
     /// The message went over the size limit.
     TooLarge,
+    /// A single line went over the limit.
+    LineTooLong,
     /// The connection closed mid-message.
     Closed,
 }
@@ -341,9 +348,11 @@ where
         .await
         {
             Ok(Ok(())) => {}
-            // An overlong line inside DATA is not worth refusing the whole message
-            // over, but it does mean the peer is not following the protocol, so the
-            // connection ends.
+            // An overlong line means the peer is not following the protocol, so the
+            // connection ends — but it ends with an answer. A dropped socket and a
+            // refusal look identical from the client's side, and only one of them tells
+            // the developer what they did.
+            Ok(Err(ReadError::TooLong)) => return Err(DataError::LineTooLong),
             Ok(Err(_)) | Err(_) => return Err(DataError::Closed),
         }
 
@@ -457,4 +466,395 @@ where
     writer.write_all(line.as_bytes()).await?;
     writer.write_all(b"\r\n").await?;
     writer.flush().await
+}
+
+#[cfg(test)]
+mod run {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use mock_resend_core::{ApiKey, Engine};
+    use tokio::io::BufReader;
+
+    use super::{Config, run};
+
+    /// Drives a whole conversation from a script and returns what the server wrote.
+    ///
+    /// No socket: the session is generic over the stream, so a byte slice in and a
+    /// `Vec` out is the whole harness. The script ends and the session sees end of
+    /// stream, which is what a client hanging up looks like.
+    async fn converse(engine: &Engine, config: Config, script: &[&str]) -> String {
+        let input = script.join("\r\n") + "\r\n";
+        let mut reader = BufReader::new(input.as_bytes());
+        let mut writer: Vec<u8> = Vec::new();
+
+        run(engine.clone(), config, &mut reader, &mut writer)
+            .await
+            .expect("writing to a Vec cannot fail");
+
+        String::from_utf8_lossy(&writer).into_owned()
+    }
+
+    /// The reply code of every reply, with multi-line continuations skipped.
+    fn codes(conversation: &str) -> Vec<&str> {
+        conversation
+            .lines()
+            .filter(|line| line.as_bytes().get(3) != Some(&b'-'))
+            .filter_map(|line| line.get(..3))
+            .collect()
+    }
+
+    fn auth_plain(key: &str) -> String {
+        BASE64.encode(format!("\0resend\0{key}"))
+    }
+
+    fn key(name: &str) -> ApiKey {
+        ApiKey::parse(name).expect("the test key is re_-prefixed")
+    }
+
+    async fn captured(engine: &Engine, name: &str) -> usize {
+        engine
+            .list_emails(&key(name))
+            .await
+            .expect("the in-memory store lists")
+            .len()
+    }
+
+    #[tokio::test]
+    async fn should_refuse_a_second_authentication_on_one_connection() {
+        let name = "re_should_refuse_a_second_authentication";
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            codes(&conversation),
+            ["220", "250", "235", "503"],
+            "a key is chosen once per connection, so the second attempt is out of order"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_refuse_a_message_over_the_size_limit() {
+        let name = "re_should_refuse_an_oversized_message";
+        let engine = Engine::in_memory();
+        let config = Config {
+            max_message_bytes: 128,
+            ..Config::default()
+        };
+
+        let conversation = converse(
+            &engine,
+            config,
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<a@example.com>",
+                "RCPT TO:<b@example.org>",
+                "DATA",
+                "From: a@example.com",
+                "To: b@example.org",
+                "Subject: Too big",
+                "",
+                &"x".repeat(200),
+                ".",
+                "QUIT",
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            codes(&conversation).last(),
+            Some(&"552"),
+            "the connection ends on the refusal, so the QUIT is never answered"
+        );
+        assert_eq!(captured(&engine, name).await, 0);
+    }
+
+    #[tokio::test]
+    async fn should_refuse_an_overlong_data_line_and_say_so() {
+        let name = "re_should_refuse_an_overlong_data_line";
+        let engine = Engine::in_memory();
+        let config = Config {
+            max_data_line_bytes: 64,
+            ..Config::default()
+        };
+
+        let conversation = converse(
+            &engine,
+            config,
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<a@example.com>",
+                "RCPT TO:<b@example.org>",
+                "DATA",
+                &"x".repeat(200),
+                ".",
+                "QUIT",
+            ],
+        )
+        .await;
+
+        // The connection still ends — the peer is not following the protocol — but it
+        // ends with an answer. A dropped socket and a refusal look identical from the
+        // client's side, and only one of them tells the developer what they did.
+        assert_eq!(codes(&conversation).last(), Some(&"500"));
+        assert_eq!(captured(&engine, name).await, 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn should_drop_an_idle_connection_rather_than_holding_it() {
+        // The clock is the runtime's, advanced by the runtime because nothing is ready
+        // to run. Waiting out two minutes of wall clock would be the same test, slowly.
+        let (client, server) = tokio::io::duplex(64);
+        let mut reader = BufReader::new(server);
+        let mut writer: Vec<u8> = Vec::new();
+
+        run(
+            Engine::in_memory(),
+            Config::default(),
+            &mut reader,
+            &mut writer,
+        )
+        .await
+        .expect("writing to a Vec cannot fail");
+
+        let conversation = String::from_utf8_lossy(&writer).into_owned();
+
+        assert_eq!(codes(&conversation), ["220", "421"]);
+
+        drop(client);
+    }
+
+    #[tokio::test]
+    async fn should_refuse_mail_from_before_a_greeting() {
+        let name = "re_should_refuse_mail_from_before_a_greeting";
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<a@example.com>",
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation), ["220", "235", "503"]);
+    }
+
+    #[tokio::test]
+    async fn should_accept_the_older_helo_greeting() {
+        let name = "re_should_accept_the_helo_greeting";
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "HELO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<a@example.com>",
+                "RCPT TO:<b@example.org>",
+                "DATA",
+                "From: a@example.com",
+                "To: b@example.org",
+                "Subject: Older client",
+                "",
+                "It works",
+                ".",
+                "QUIT",
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation).last(), Some(&"221"));
+        assert_eq!(captured(&engine, name).await, 1);
+    }
+
+    #[tokio::test]
+    async fn should_refuse_data_before_a_recipient() {
+        let name = "re_should_refuse_data_before_a_recipient";
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<a@example.com>",
+                "DATA",
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation), ["220", "250", "235", "250", "503"]);
+    }
+
+    #[tokio::test]
+    async fn should_refuse_an_empty_recipient_address() {
+        let name = "re_should_refuse_an_empty_recipient";
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<a@example.com>",
+                "RCPT TO:<>",
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation).last(), Some(&"501"));
+    }
+
+    #[tokio::test]
+    async fn should_not_recognise_a_mail_command_without_an_address() {
+        let name = "re_should_not_recognise_a_bare_mail";
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL",
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation).last(), Some(&"500"));
+    }
+
+    #[tokio::test]
+    async fn should_report_a_message_the_engine_refuses_as_permanent() {
+        let name = "re_should_report_an_invalid_message";
+        let engine = Engine::in_memory();
+
+        // The null sender and no `From` header, so the engine has no sender to record.
+        // 554 rather than a 4xx: retrying this unchanged cannot help.
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<>",
+                "RCPT TO:<b@example.org>",
+                "DATA",
+                "Subject: No sender",
+                "",
+                "It works",
+                ".",
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation).last(), Some(&"554"));
+        assert_eq!(captured(&engine, name).await, 0);
+    }
+
+    #[tokio::test]
+    async fn should_accept_a_message_after_one_the_engine_refused() {
+        let name = "re_should_accept_after_a_refusal";
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "EHLO test.example.com",
+                &format!("AUTH PLAIN {}", auth_plain(name)),
+                "MAIL FROM:<>",
+                "RCPT TO:<b@example.org>",
+                "DATA",
+                "Subject: No sender",
+                "",
+                "It works",
+                ".",
+                "MAIL FROM:<a@example.com>",
+                "RCPT TO:<b@example.org>",
+                "DATA",
+                "From: a@example.com",
+                "To: b@example.org",
+                "Subject: Second try",
+                "",
+                "It works",
+                ".",
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation).last(), Some(&"250"));
+        assert_eq!(
+            captured(&engine, name).await,
+            1,
+            "a refused message leaves the session usable, with nothing of it kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn should_treat_the_line_after_auth_plain_as_credentials_and_not_as_a_command() {
+        let engine = Engine::in_memory();
+
+        // `QUIT` arrives where the base64 payload belongs, so it is credentials that
+        // cannot be decoded rather than a command. A session that parsed it as one
+        // would hang up on a client that is merely confused.
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &["EHLO test.example.com", "AUTH PLAIN", "QUIT", "NOOP"],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation), ["220", "250", "334", "501", "250"]);
+    }
+
+    #[tokio::test]
+    async fn should_refuse_a_login_password_that_is_not_an_api_key() {
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &[
+                "EHLO test.example.com",
+                "AUTH LOGIN",
+                &BASE64.encode("resend"),
+                &BASE64.encode("hunter2"),
+            ],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation), ["220", "250", "334", "334", "535"]);
+    }
+
+    #[tokio::test]
+    async fn should_report_a_login_field_that_is_not_base64() {
+        let engine = Engine::in_memory();
+
+        let conversation = converse(
+            &engine,
+            Config::default(),
+            &["EHLO test.example.com", "AUTH LOGIN", "not base64 at all"],
+        )
+        .await;
+
+        assert_eq!(codes(&conversation).last(), Some(&"501"));
+    }
 }

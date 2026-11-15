@@ -179,14 +179,25 @@ impl Idempotency {
     ) -> Result<()> {
         let mut records = self.records.write().map_err(|_| poisoned())?;
 
-        let _replaced = records.insert(
-            (key.clone(), idempotency_key.clone()),
-            Record::Completed {
-                fingerprint,
-                outcome,
-                at: now,
-            },
-        );
+        // Only a live reservation is completed. If a reset ran while this request was
+        // in flight it removed the reservation *and* the message, so re-adding a record
+        // here would leave the key replaying an id that `GET /emails/{id}` can no longer
+        // find. "Reset forgets everything under the key" has to stay true even for a
+        // request that was already running.
+        let Entry::Occupied(mut slot) = records.entry((key.clone(), idempotency_key.clone()))
+        else {
+            return Ok(());
+        };
+
+        if !matches!(slot.get(), Record::InFlight { .. }) {
+            return Ok(());
+        }
+
+        let _replaced = slot.insert(Record::Completed {
+            fingerprint,
+            outcome,
+            at: now,
+        });
 
         Ok(())
     }
@@ -509,6 +520,29 @@ mod register {
             ),
             "one test's idempotency key must not replay into another's"
         );
+    }
+
+    #[test]
+    fn should_let_a_key_be_used_again_after_a_reset_dropped_its_reservation() {
+        let register = Idempotency::new();
+        let key = api_key("re_should_release_a_reservation_on_reset");
+        let idempotency_key = idempotency_key();
+
+        let _reserved = register
+            .begin(&key, &idempotency_key, 1, now())
+            .expect("the first request reserves the key");
+
+        register.reset(Some(&key)).expect("resets");
+
+        // A suite whose request died mid-flight resets and runs again. A reservation
+        // surviving the reset would answer that with `concurrent_idempotent_requests`
+        // forever, and nothing could clear it.
+        assert!(matches!(
+            register
+                .begin(&key, &idempotency_key, 1, now())
+                .expect("the register is readable"),
+            Begin::Proceed
+        ));
     }
 
     #[test]

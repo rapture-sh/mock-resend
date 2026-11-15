@@ -73,3 +73,69 @@ pub fn run(port: u16) -> Result<(), String> {
         Err(format!("the server answered `{status_line}`"))
     }
 }
+
+#[cfg(test)]
+mod run {
+    use std::io::{BufRead as _, BufReader, Write as _};
+    use std::net::{Ipv4Addr, TcpListener};
+    use std::thread::JoinHandle;
+
+    use super::run;
+
+    /// Answers one request with `status`, and reports the request line it was sent.
+    ///
+    /// A listener on port zero rather than the documented port: these run alongside
+    /// everything else, and the check is about what is asked for, not where.
+    fn serve_once(status: &'static str) -> (u16, JoinHandle<String>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("a free port");
+        let port = listener.local_addr().expect("it is bound").port();
+
+        let handle = std::thread::spawn(move || {
+            let (stream, _peer) = listener.accept().expect("the healthcheck connects");
+
+            let mut reader = BufReader::new(&stream);
+            let mut request_line = String::new();
+            let _read = reader
+                .read_line(&mut request_line)
+                .expect("the request is readable");
+
+            let mut writer = &stream;
+            writer
+                .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes())
+                .expect("the socket is writable");
+            writer.flush().expect("it flushes");
+
+            // Dropping the stream closes the connection, which is the end of the
+            // response the check is waiting for.
+            request_line
+        });
+
+        (port, handle)
+    }
+
+    #[test]
+    fn should_report_a_server_that_answers_two_hundred_as_healthy() {
+        let (port, server) = serve_once("200 OK");
+
+        assert_eq!(run(port), Ok(()));
+
+        let request_line = server.join().expect("the fake server finished");
+
+        assert!(
+            request_line.starts_with("GET /_admin/health "),
+            "the check has to ask the endpoint the admin router serves, got {request_line:?}"
+        );
+    }
+
+    #[test]
+    fn should_report_a_server_that_answers_an_error_as_unhealthy() {
+        let (port, server) = serve_once("503 Service Unavailable");
+
+        assert!(
+            run(port).is_err(),
+            "a container whose server is refusing requests is not healthy"
+        );
+
+        let _request_line = server.join().expect("the fake server finished");
+    }
+}

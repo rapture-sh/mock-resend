@@ -165,6 +165,42 @@ mod enforce {
     }
 
     #[tokio::test]
+    async fn should_serve_a_request_again_once_the_engines_clock_leaves_the_window() {
+        let clock = std::sync::Arc::new(mock_resend_core::TestClock::new());
+        let engine = Engine::new(
+            std::sync::Arc::new(mock_resend_core::MemoryStore::new()),
+            std::sync::Arc::clone(&clock) as std::sync::Arc<dyn mock_resend_core::Clock>,
+        )
+        .with_rate_limit(Some(1));
+        let app = router(engine);
+
+        let _spent = app
+            .clone()
+            .oneshot(send("re_should_serve_again_after_the_window"))
+            .await
+            .expect("infallible");
+
+        let refused = app
+            .clone()
+            .oneshot(send("re_should_serve_again_after_the_window"))
+            .await
+            .expect("infallible");
+
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        // Moving the engine's clock is what ends the window. A limiter reading
+        // `Utc::now()` instead would leave this test waiting out a real second.
+        clock.advance_secs(1);
+
+        let served = app
+            .oneshot(send("re_should_serve_again_after_the_window"))
+            .await
+            .expect("infallible");
+
+        assert_eq!(served.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
     async fn should_let_an_unauthenticated_request_reach_its_own_error() {
         let request = Request::post("/emails")
             .header("content-type", "application/json")

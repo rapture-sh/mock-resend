@@ -152,6 +152,11 @@ pub async fn update_email(
     Path(id): Path<String>,
     body: Bytes,
 ) -> Result<Response, ApiError> {
+    // `FaultTarget::Any` says every Resend endpoint, so a suite has to be able to make
+    // a reschedule fail too. Rescheduling and cancelling are grouped under `Send`:
+    // they act on an outgoing message rather than reading one.
+    engine.check_fault(&key, FaultTarget::Send)?;
+
     let id = parse_id(&id)?;
     let request: UpdateEmailRequest = parse_body(&body)?;
 
@@ -175,6 +180,8 @@ pub async fn cancel_email(
     AuthenticatedKey(key): AuthenticatedKey,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
+    engine.check_fault(&key, FaultTarget::Send)?;
+
     let id = parse_id(&id)?;
     let cancelled = engine.cancel_email(&key, &id).await?;
 

@@ -324,7 +324,12 @@ pub struct EmailResponse {
     pub object: &'static str,
     /// The message id.
     pub id: String,
-    /// The RFC 5322 `Message-ID`, absent while a send is still scheduled.
+    /// The RFC 5322 `Message-ID`.
+    ///
+    /// Always present: one is minted at capture, because Resend's own documented
+    /// `email.scheduled` payload carries a `message_id` and the SDK's type for it is
+    /// not optional. The field stays `Option` because the SDK's retrieve type has it
+    /// that way.
     pub message_id: Option<String>,
     /// Sender, as given.
     pub from: String,
@@ -346,8 +351,11 @@ pub struct EmailResponse {
     pub reply_to: Option<Vec<String>>,
     /// The most recent delivery event.
     pub last_event: String,
-    /// When the send is due, present only for a scheduled message.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// When the send is due, or `null`.
+    ///
+    /// Serialised either way rather than omitted: Resend's documented retrieve payload
+    /// carries `"scheduled_at": null` for a message that was not scheduled, and a
+    /// non-Rust client testing `'scheduled_at' in response` would diverge otherwise.
     pub scheduled_at: Option<String>,
 }
 
@@ -677,8 +685,14 @@ mod email_response {
     }
 
     #[test]
-    fn should_omit_scheduled_at_for_a_message_that_was_not_scheduled() {
-        assert!(json(message()).get("scheduled_at").is_none());
+    fn should_report_scheduled_at_as_null_rather_than_omitting_it() {
+        let json = json(message());
+
+        assert!(
+            json.get("scheduled_at")
+                .is_some_and(serde_json::Value::is_null),
+            "Resend's documented payload has the key present and null"
+        );
     }
 
     #[test]

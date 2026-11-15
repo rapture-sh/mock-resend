@@ -20,7 +20,12 @@ use std::fmt;
 /// <https://resend.com/docs/dashboard/emails/introduction#understand-email-events>
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum EmailEvent {
-    /// Queued for delivery. Resend uses this for broadcasts and batches.
+    /// Queued for delivery.
+    ///
+    /// Resend reports this for broadcasts and batches. mock-resend does **not**: a
+    /// batched message goes straight to [`EmailEvent::Sent`], because the alternative
+    /// is an intermediate state that real Resend passes through in milliseconds and a
+    /// test would have to race. Listed in the README as a divergence.
     Queued,
     /// Held until `scheduled_at`.
     Scheduled,

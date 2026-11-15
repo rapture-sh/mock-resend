@@ -49,6 +49,42 @@ impl KeyQuery {
     }
 }
 
+/// A one-word acknowledgement.
+///
+/// A type rather than a `serde_json::json!` literal, because AGENTS.md asks for one and
+/// because a response nobody can find the shape of is a response nobody can rely on.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusResponse {
+    /// What happened.
+    pub status: &'static str,
+}
+
+impl StatusResponse {
+    /// A fault rule was added.
+    #[must_use]
+    pub const fn added() -> Self {
+        Self { status: "added" }
+    }
+
+    /// A key's fault rules were removed.
+    #[must_use]
+    pub const fn cleared() -> Self {
+        Self { status: "cleared" }
+    }
+
+    /// A delivery rule was applied.
+    #[must_use]
+    pub const fn set() -> Self {
+        Self { status: "set" }
+    }
+
+    /// A webhook endpoint was removed.
+    #[must_use]
+    pub const fn removed() -> Self {
+        Self { status: "removed" }
+    }
+}
+
 /// What a reset did.
 #[derive(Debug, Clone, Serialize)]
 pub struct ResetResponse {
