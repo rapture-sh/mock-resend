@@ -1,0 +1,18 @@
+[package]
+name = "conformance"
+description = "Integration tests driven through a real Resend SDK. Never published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+mock-resend-testkit.workspace = true
+
+chrono.workspace = true
+resend-rs.workspace = true
+tokio.workspace = true
