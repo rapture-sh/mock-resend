@@ -5,6 +5,7 @@
 
 mod support;
 
+use mock_resend_core::{ApiKey, FaultRule, FaultTarget, ResendError};
 use resend_rs::idempotent::IdempotentTrait as _;
 use resend_rs::types::CreateEmailBaseOptions;
 use support::{client_for, email, instance};
@@ -168,4 +169,50 @@ async fn should_let_a_retry_proceed_after_the_first_attempt_was_rejected() {
             .is_ok(),
         "a rejected request must not burn the key"
     );
+}
+
+#[tokio::test]
+async fn should_let_a_retry_proceed_after_an_injected_fault_refused_the_send() {
+    let name = "re_should_let_a_retry_proceed_past_a_fault";
+    let (server, client) = instance(name).await;
+
+    server
+        .engine()
+        .faults()
+        .add_rule(
+            &ApiKey::parse(name).expect("the test key is re_-prefixed"),
+            FaultRule {
+                target: FaultTarget::Send,
+                error: ResendError {
+                    name: "application_error".to_owned(),
+                    status: 500,
+                    message: "Injected by a fault rule.".to_owned(),
+                },
+                remaining: Some(1),
+            },
+        )
+        .expect("the rule is accepted");
+
+    let request = email("Hello").with_idempotency_key("order-1234");
+
+    let _refused = client
+        .emails
+        .send(request.clone())
+        .await
+        .expect_err("the fault fires");
+
+    // The case a client's retry logic actually hits: the server was down, so the same
+    // key is sent again. A fault that burned the key would answer the retry with
+    // `concurrent_idempotent_requests` and nothing could clear it.
+    let sent = client
+        .emails
+        .send(request)
+        .await
+        .expect("the retry is served");
+
+    let key = ApiKey::parse(name).expect("valid");
+    let captured = server.engine().list_emails(&key).await.expect("list");
+
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].id.to_string(), sent.id.to_string());
 }

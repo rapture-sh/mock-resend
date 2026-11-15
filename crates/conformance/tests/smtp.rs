@@ -552,3 +552,69 @@ async fn should_produce_the_same_events_as_an_api_send() {
         EmailEvent::Delivered
     );
 }
+
+#[tokio::test]
+async fn should_capture_an_attachment_out_of_a_multipart_message() {
+    let name = "re_should_capture_an_smtp_attachment";
+    let server = mock_resend_testkit::MockResend::start()
+        .await
+        .expect("the instance binds a port");
+    let api = client_for(&server, name);
+
+    let mut client = Client::connect(server.smtp_address()).await;
+    let _authenticated = client.authenticate(name).await;
+    let _from = client.send("MAIL FROM:<a@example.com>").await;
+    let _to = client.send("RCPT TO:<b@example.org>").await;
+    let _data = client.send("DATA").await;
+
+    // The shape a mail client really sends: the body in an alternative, nested inside a
+    // mixed that carries the file.
+    let reply = client
+        .send_data(
+            "From: a@example.com\r\n\
+             To: b@example.org\r\n\
+             Subject: With a file\r\n\
+             Content-Type: multipart/mixed; boundary=\"outer\"\r\n\
+             \r\n\
+             --outer\r\n\
+             Content-Type: multipart/alternative; boundary=\"inner\"\r\n\
+             \r\n\
+             --inner\r\n\
+             Content-Type: text/plain\r\n\
+             \r\n\
+             It works\r\n\
+             --inner--\r\n\
+             --outer\r\n\
+             Content-Type: text/csv\r\n\
+             Content-Disposition: attachment; filename=\"report.csv\"\r\n\
+             \r\n\
+             name,count\r\n\
+             --outer--",
+        )
+        .await;
+
+    assert!(reply.starts_with("250"), "got {reply}");
+
+    let id = captured_id(&reply);
+    let retrieved = api.emails.get(&id).await.expect("retrieved");
+
+    assert_eq!(retrieved.text.as_deref(), Some("It works"));
+
+    // Resend does not report attachments on a retrieve, so the admin surface is where a
+    // captured file shows up.
+    let body: serde_json::Value = reqwest::Client::new()
+        .get(format!(
+            "{}/_admin/emails/{id}?api_key={name}",
+            server.base_url()
+        ))
+        .send()
+        .await
+        .expect("the admin API answers")
+        .json()
+        .await
+        .expect("the body is json");
+
+    assert_eq!(body["attachments"][0]["filename"], "report.csv");
+    assert_eq!(body["attachments"][0]["source"], "content");
+    assert_eq!(body["attachments"][0]["bytes"], 10);
+}

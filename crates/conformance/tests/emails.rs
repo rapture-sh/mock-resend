@@ -231,3 +231,51 @@ async fn should_hold_a_future_send_as_scheduled() {
         "Resend's documented email.scheduled payload carries a message_id"
     );
 }
+
+#[tokio::test]
+async fn should_accept_a_send_from_a_client_that_sends_no_user_agent() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    let name = "re_should_accept_a_send_with_no_user_agent";
+    let (server, _client) = instance(name).await;
+
+    // Written onto the socket by hand because every SDK and every HTTP client sets a
+    // `User-Agent`, and the header's *absence* is the thing under test: whether real
+    // Resend requires one is unconfirmed, so mock-resend is deliberately permissive
+    // rather than refusing a request the real API would accept. See README.md.
+    let body = r#"{"from":"Acme <onboarding@example.com>","to":"delivered@example.org","subject":"No user agent","text":"It works"}"#;
+    let request = format!(
+        "POST /emails HTTP/1.1\r\n\
+         Host: {address}\r\n\
+         Authorization: Bearer {name}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {length}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {body}",
+        address = server.address(),
+        length = body.len(),
+    );
+
+    let mut stream = tokio::net::TcpStream::connect(server.address())
+        .await
+        .expect("the listener accepts");
+
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("the socket is writable");
+    stream.flush().await.expect("it flushes");
+
+    let mut response = String::new();
+    let _read = stream
+        .read_to_string(&mut response)
+        .await
+        .expect("the server answers");
+
+    assert!(
+        response.starts_with("HTTP/1.1 200 OK"),
+        "a request with no User-Agent is served, got {:?}",
+        response.lines().next()
+    );
+}
