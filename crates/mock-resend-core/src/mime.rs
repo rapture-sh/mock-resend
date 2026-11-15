@@ -432,6 +432,132 @@ fn all_addresses(address: Option<&mail_parser::Address<'_>>) -> Vec<String> {
         .collect()
 }
 
+/// The envelope an SMTP transaction carried, alongside the message itself.
+///
+/// SMTP keeps the envelope and the headers separate, and they genuinely differ: a `Bcc`
+/// recipient is in the envelope and deliberately absent from the headers, which is the
+/// whole point of a blind copy.
+#[derive(Debug, Clone, Default)]
+pub struct Envelope {
+    /// `MAIL FROM`.
+    pub sender: String,
+    /// Every `RCPT TO`, in the order they arrived.
+    pub recipients: Vec<String>,
+}
+
+/// Turns a message that arrived over SMTP into a send request.
+///
+/// The result goes through the same engine method an API send does, so a message that
+/// arrives this way is held to the same validation and produces the same events.
+///
+/// Headers win over the envelope for what a reader sees, and the envelope fills in what
+/// the headers do not say. Recipients that are in the envelope but in neither `To` nor
+/// `Cc` are reconstructed as `Bcc`, which is where they came from.
+///
+/// # Errors
+///
+/// [`Error::Validation`] when the bytes are not a parseable message.
+pub fn inbound_to_send(raw: &[u8], envelope: &Envelope) -> Result<crate::mailbox::SendEmail> {
+    let parsed = mail_parser::MessageParser::default()
+        .parse(raw)
+        .ok_or_else(|| Error::validation("The message could not be parsed as MIME."))?;
+
+    let header_to = all_addresses(parsed.to());
+    let header_cc = all_addresses(parsed.cc());
+
+    let to = if header_to.is_empty() {
+        envelope.recipients.clone()
+    } else {
+        header_to.clone()
+    };
+
+    // Anything the envelope named that no visible header accounts for was blind-copied.
+    let visible: Vec<String> = header_to
+        .iter()
+        .chain(header_cc.iter())
+        .map(|address| bare_address(address).to_ascii_lowercase())
+        .collect();
+
+    let mut bcc = all_addresses(parsed.bcc());
+    if !header_to.is_empty() {
+        for recipient in &envelope.recipients {
+            let bare = bare_address(recipient).to_ascii_lowercase();
+
+            if !visible.contains(&bare)
+                && !bcc
+                    .iter()
+                    .any(|existing| bare_address(existing).eq_ignore_ascii_case(&bare))
+            {
+                bcc.push(recipient.clone());
+            }
+        }
+    }
+
+    let text = parsed.text_bodies().find_map(|part| match &part.body {
+        mail_parser::PartType::Text(text) => Some(text.as_ref().to_owned()),
+        _ => None,
+    });
+    let html = parsed.html_bodies().find_map(|part| match &part.body {
+        mail_parser::PartType::Html(html) => Some(html.as_ref().to_owned()),
+        _ => None,
+    });
+
+    // A message with no body at all would be refused by the engine, and an empty text
+    // body is a truer description of what arrived than a missing one.
+    let text = match (&text, &html) {
+        (None, None) => Some(String::new()),
+        _ => text,
+    };
+
+    let headers: BTreeMap<String, String> = parsed
+        .headers()
+        .iter()
+        .filter(|header| !is_private(header.name()) && !is_structural(header.name()))
+        .filter_map(|header| raw_value(header).map(|value| (header.name().to_owned(), value)))
+        .collect();
+
+    let attachments = parsed
+        .attachments()
+        .map(|part| Attachment {
+            filename: part.attachment_name().map(str::to_owned),
+            content_type: part
+                .content_type()
+                .map(|content_type| match content_type.subtype() {
+                    Some(subtype) => format!("{}/{subtype}", content_type.ctype()),
+                    None => content_type.ctype().to_owned(),
+                }),
+            content_id: part.content_id().map(str::to_owned),
+            source: AttachmentSource::Content(Bytes::from(part.contents().to_vec())),
+        })
+        .collect();
+
+    Ok(crate::mailbox::SendEmail {
+        from: first_address(parsed.from()).unwrap_or_else(|| envelope.sender.clone()),
+        to,
+        subject: parsed.subject().unwrap_or_default().to_owned(),
+        html,
+        text,
+        cc: header_cc,
+        bcc,
+        reply_to: all_addresses(parsed.reply_to()),
+        headers,
+        attachments,
+        tags: Vec::new(),
+        template: None,
+        scheduled_at: None,
+    })
+}
+
+/// The address part of `Name <addr>`, or the whole string.
+fn bare_address(value: &str) -> &str {
+    let trimmed = value.trim();
+
+    match (trimmed.rfind('<'), trimmed.rfind('>')) {
+        (Some(open), Some(close)) if close > open => trimmed[open + 1..close].trim(),
+        _ => trimmed,
+    }
+}
+
 #[cfg(test)]
 mod round_trip {
     use std::collections::BTreeMap;

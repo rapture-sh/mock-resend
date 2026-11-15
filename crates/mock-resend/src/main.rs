@@ -94,6 +94,26 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
     // ticks directly, which is why neither has to sleep.
     let ticker = tokio::spawn(tick_loop(engine.clone()));
 
+    // A second way into the same engine, so a message that arrives here is retrievable
+    // through `GET /emails/{id}` and lands in the same event stream.
+    let smtp = if cli.no_smtp {
+        None
+    } else {
+        let smtp_address = SocketAddr::new(cli.host, cli.smtp_port);
+        let smtp_listener = TcpListener::bind(smtp_address)
+            .await
+            .map_err(|error| format!("could not bind {smtp_address}: {error}"))?;
+
+        let bound = smtp_listener.local_addr().unwrap_or(smtp_address);
+        tracing::info!("SMTP listening on {bound}, username `resend`, password any API key");
+
+        Some(tokio::spawn(mock_resend_smtp::serve(
+            engine.clone(),
+            smtp_listener,
+            mock_resend_smtp::Config::default(),
+        )))
+    };
+
     tracing::info!("mock-resend listening on http://{bound}");
     tracing::info!("point a Resend client at it with RESEND_BASE_URL=http://{bound}");
     tracing::info!("admin API on http://{bound}/_admin, unauthenticated");
@@ -120,6 +140,9 @@ async fn serve(cli: &cli::Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     ticker.abort();
     webhooks.abort();
+    if let Some(smtp) = smtp {
+        smtp.abort();
+    }
 
     Ok(())
 }

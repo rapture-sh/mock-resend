@@ -1202,6 +1202,7 @@ dependencies = [
  "mock-resend-admin",
  "mock-resend-api",
  "mock-resend-core",
+ "mock-resend-smtp",
  "mock-resend-webhooks",
  "tokio",
  "tracing",
@@ -1256,6 +1257,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mock-resend-smtp"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "mock-resend-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "mock-resend-testkit"
 version = "0.1.0"
 dependencies = [
@@ -1264,6 +1275,7 @@ dependencies = [
  "mock-resend-admin",
  "mock-resend-api",
  "mock-resend-core",
+ "mock-resend-smtp",
  "mock-resend-webhooks",
  "tokio",
 ]

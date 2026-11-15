@@ -1,0 +1,18 @@
+[package]
+name = "mock-resend-smtp"
+description = "The SMTP listener for mock-resend. A second way into the same mailbox."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+mock-resend-core.workspace = true
+
+base64.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util"] }

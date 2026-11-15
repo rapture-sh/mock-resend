@@ -32,6 +32,7 @@ pub use fault::{
 };
 pub use idempotency::{IdempotencyKey, Outcome as IdempotentOutcome};
 pub use mailbox::SendEmail;
+pub use mime::Envelope;
 pub use model::{ApiKey, Attachment, AttachmentSource, EmailId, Message, Tag};
 pub use schedule::{Clock, SystemClock, TestClock};
 pub use store::{Store, disk::DiskStore, memory::MemoryStore};

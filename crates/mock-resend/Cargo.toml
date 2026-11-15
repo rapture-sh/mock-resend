@@ -11,6 +11,7 @@ repository.workspace = true
 mock-resend-admin.workspace = true
 mock-resend-api.workspace = true
 mock-resend-core.workspace = true
+mock-resend-smtp.workspace = true
 mock-resend-webhooks.workspace = true
 
 axum.workspace = true

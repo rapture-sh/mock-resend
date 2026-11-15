@@ -26,10 +26,12 @@ use tokio::task::JoinHandle;
 #[derive(Debug)]
 pub struct MockResend {
     address: SocketAddr,
+    smtp_address: SocketAddr,
     engine: Engine,
     clock: Arc<TestClock>,
     server: JoinHandle<()>,
     webhooks: JoinHandle<()>,
+    smtp: JoinHandle<()>,
 }
 
 /// What to turn on for an instance.
@@ -123,6 +125,14 @@ impl MockResend {
 
         let webhooks = tokio::spawn(sender.run(engine.clone(), transitions_rx));
 
+        let smtp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let smtp_address = smtp_listener.local_addr()?;
+        let smtp = tokio::spawn(mock_resend_smtp::serve(
+            engine.clone(),
+            smtp_listener,
+            mock_resend_smtp::Config::default(),
+        ));
+
         // Port zero: the operating system picks one that is free, so two tests running
         // at the same time cannot collide.
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -138,10 +148,12 @@ impl MockResend {
 
         Ok(Self {
             address,
+            smtp_address,
             engine,
             clock,
             server,
             webhooks,
+            smtp,
         })
     }
 
@@ -155,6 +167,14 @@ impl MockResend {
     #[must_use]
     pub fn address(&self) -> SocketAddr {
         self.address
+    }
+
+    /// The address the instance's SMTP listener is on.
+    ///
+    /// Also a port of the operating system's choosing, for the same reason.
+    #[must_use]
+    pub fn smtp_address(&self) -> SocketAddr {
+        self.smtp_address
     }
 
     /// The engine behind the instance, for asserting on captured mail directly.
@@ -210,5 +230,6 @@ impl Drop for MockResend {
     fn drop(&mut self) {
         self.server.abort();
         self.webhooks.abort();
+        self.smtp.abort();
     }
 }

@@ -26,10 +26,8 @@ for parallel suites and fault injection. Kywi now consumes it like everyone else
 **Status: pre-release.** This describes the target shape of the first tagged release, not
 a finished product. The admin API will break without ceremony until `0.1.0`.
 
-Working today: the whole `/emails` surface, the delivery event lifecycle with signed
-webhooks, idempotency keys, per-key fault injection and rate limiting, the `/_admin` API,
-and captured mail written to disk as `.eml`. Still to come: the SMTP listener and the
-embedded console. The tables below mark what is landed and what is not.
+Everything below is working except the embedded console, which is the last piece. The
+tables mark it.
 
 
 Running it
@@ -103,8 +101,8 @@ Configuration
 | `--allow-public-webhooks` | off | Let webhooks reach public internet addresses | ✅ |
 | `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written | ✅ |
 | `--in-memory` | off | Keep everything in RAM and discard it on exit | ✅ |
-| `--smtp-port` | `1025` | SMTP listener port | planned |
-| `--no-smtp` | off | Disable the SMTP listener | planned |
+| `--smtp-port` | `1025` | SMTP listener port | ✅ |
+| `--no-smtp` | off | Disable the SMTP listener | ✅ |
 
 Every flag has a `MOCK_RESEND_`-prefixed environment variable equivalent, which is usually
 easier in a compose file. `RUST_LOG` overrides `--log` with a full filter directive if you
@@ -133,7 +131,12 @@ mock-resend process
 
 Both listeners share one engine and one mailbox, so a message that arrives over SMTP is
 retrievable through `GET /emails/{id}` and lands in the same event stream as one sent
-through the API.
+through the API. Point an SMTP client at `localhost:1025` with username `resend` and your
+API key as the password — the key is how the message finds its namespace. There is no
+`STARTTLS` and there will not be.
+
+A recipient that appears in the SMTP envelope but in no visible header is reconstructed as
+`Bcc`, which is where it came from.
 
 **Everything is scoped to the API key** — captured mail, delivery events, webhook
 endpoints, fault rules, statistics. No global switches. That is what makes one shared
@@ -173,7 +176,7 @@ Supported surface
 | Faults | Per-key error injection and delivery outcomes | ✅ |
 | Webhooks | Svix-signed delivery to per-key endpoints, with retries | ✅ |
 | Storage | One `.eml` per message under `--data`, reloaded on restart | ✅ |
-| SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | planned |
+| SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | ✅ |
 | Admin | The whole `/_admin` surface below | ✅ |
 | Console | The embedded web UI | planned |
 

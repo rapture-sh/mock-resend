@@ -25,6 +25,14 @@ pub struct Cli {
     #[arg(long, env = "MOCK_RESEND_PORT", default_value_t = 9100)]
     pub port: u16,
 
+    /// Port for the SMTP listener.
+    #[arg(long, env = "MOCK_RESEND_SMTP_PORT", default_value_t = 1025)]
+    pub smtp_port: u16,
+
+    /// Disable the SMTP listener.
+    #[arg(long, env = "MOCK_RESEND_NO_SMTP")]
+    pub no_smtp: bool,
+
     /// Where captured mail is written, as one `.eml` per message.
     ///
     /// Defaults to `/data` inside the published image and `./data` elsewhere, so a
@@ -134,6 +142,19 @@ mod command_line {
 
         assert_eq!(cli.rate_limit, Some(10));
         assert_eq!(cli.delivery_delay, Some(250));
+    }
+
+    #[test]
+    fn should_default_to_the_documented_smtp_port() {
+        let cli = Cli::parse_from(["mock-resend"]);
+
+        assert_eq!(cli.smtp_port, 1025);
+        assert!(!cli.no_smtp);
+    }
+
+    #[test]
+    fn should_accept_turning_smtp_off() {
+        assert!(Cli::parse_from(["mock-resend", "--no-smtp"]).no_smtp);
     }
 
     #[test]
