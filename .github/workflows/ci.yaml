@@ -40,6 +40,36 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --workspace
 
+  console:
+    name: console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install
+        run: pnpm --dir web install --frozen-lockfile
+
+      # The same three the Rust side gets, for the same reason: each runs even if an
+      # earlier one failed, so a single push reports every problem.
+      - name: Types
+        run: pnpm --dir web typecheck
+
+      - name: Lint
+        if: ${{ !cancelled() }}
+        run: pnpm --dir web lint
+
+      - name: Build
+        if: ${{ !cancelled() }}
+        run: pnpm --dir web build
+
   image:
     name: container image
     runs-on: ubuntu-latest

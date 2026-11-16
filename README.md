@@ -26,8 +26,7 @@ for parallel suites and fault injection. Kywi now consumes it like everyone else
 **Status: pre-release.** This describes the target shape of the first tagged release, not
 a finished product. The admin API will break without ceremony until `0.1.0`.
 
-Everything below is working except the embedded console, which is the last piece. The
-tables mark it.
+Everything below is working. The tables mark what is landed.
 
 
 Running it
@@ -187,7 +186,7 @@ Supported surface
 | Storage | One `.eml` per message under `--data`, reloaded on restart | ✅ |
 | SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | ✅ |
 | Admin | The whole `/_admin` surface below | ✅ |
-| Console | The embedded web UI | planned |
+| Console | The embedded web UI at `/_admin/console/` | ✅ |
 
 Validation matches Resend's, because validation is most of what a mock is for. Landed:
 the 50-recipient limit, the 100-message batch limit, the tag character set and length,
@@ -282,7 +281,29 @@ know the name you want to test against. Registering a webhook hands back the sig
 secret in full, which a real API would never do: nothing here is a secret, and a test that
 cannot read it cannot check a signature.
 
-The console that will sit on top of this is a later phase.
+
+Console
+-------
+
+Open <http://localhost:9100> in a browser. There is no second port and nothing to start
+separately: the console is embedded in the binary and served from the same listener as
+the API, under `/_admin/console/`.
+
+It shows every message captured, across every API key, newest first and updating while a
+test run is going. Opening one gives you the same switch Resend's own console has —
+**Preview**, **Plain Text**, **HTML**, **Raw** — plus the attachments, which you can
+download. Preview renders the HTML in a fully sandboxed frame: captured mail is whatever
+a caller sent, and looking at a message should not be able to do anything.
+
+Raw is the `.eml`, byte for byte what the disk backend writes, `X-Mock-Resend-*` headers
+and all. It is often the fastest way to answer "why did that header not arrive".
+
+A message also says how it got here — `POST /emails` or `SMTP` — which is usually the
+first thing you want to know when an SMTP client is involved.
+
+Why `/_admin/console/` and not `/`? Resend owns `/emails/{id}` on the same port, so a
+console route of that shape at the root would collide with the API the console exists to
+show. `/` redirects, so you never have to type it.
 
 
 Delivery events and webhooks
@@ -353,6 +374,10 @@ cargo run
 
 ```bash
 cargo xtask dist
+```
+
+```bash
+cargo xtask console
 ```
 
 ```bash

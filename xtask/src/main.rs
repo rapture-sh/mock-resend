@@ -12,6 +12,7 @@ fn main() -> ExitCode {
     let task = std::env::args().nth(1);
 
     let result = match task.as_deref() {
+        Some("console") => console(),
         Some("dist") => dist(),
         Some("docker") => docker(),
         Some(other) => Err(format!("unknown task: {other}\n\n{}", usage())),
@@ -30,7 +31,8 @@ fn main() -> ExitCode {
 fn usage() -> String {
     format!(
         "tasks:\n  \
-         dist      build the release binary\n  \
+         console   build the web console into web/dist\n  \
+         dist      build the console, then the release binary\n  \
          docker    build the container image ({IMAGE}:dev)\n"
     )
 }
@@ -59,7 +61,27 @@ fn run(program: &str, args: &[&str], cwd: &Path) -> Result<(), String> {
     }
 }
 
+/// Build the console's assets.
+///
+/// `rust-embed` compiles `web/dist` into the binary, so this has to happen first or the
+/// release binary ships whatever was there last — or, in a fresh checkout, a page saying
+/// the console was never built.
+fn console() -> Result<(), String> {
+    let web = workspace_root().join("web");
+
+    if !web.join("package.json").exists() {
+        return Err("no web/package.json at the workspace root".to_owned());
+    }
+
+    let pnpm = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+
+    run(pnpm, &["install", "--frozen-lockfile"], &web)?;
+    run(pnpm, &["run", "build"], &web)
+}
+
 fn dist() -> Result<(), String> {
+    console()?;
+
     run("cargo", &["build", "--release"], &workspace_root())
 }
 

@@ -129,7 +129,8 @@ crates/
 
   mock-resend-smtp/          the :1025 listener, MIME in, same mailbox
   mock-resend-webhooks/      outbound delivery, Svix-compatible signing, retries
-  mock-resend-admin/         the /_admin API, and later the embedded console
+  mock-resend-admin/         the /_admin API, and the embedded console
+    src/console.rs           web/dist, embedded with rust-embed and served
 
   mock-resend/               the binary
     src/cli.rs               clap definitions
@@ -137,6 +138,9 @@ crates/
 
   mock-resend-testkit/       spawn an in-process instance from a Rust test
   conformance/               integration tests driven by a real Resend SDK
+
+web/                         the console: React, Vite, Tailwind. Built to web/dist,
+                             which rust-embed compiles into the binary.
 
 xtask/                       build orchestration
 ```
@@ -157,9 +161,12 @@ Where things go:
   it is a crate boundary rather than a module: rule 5 is enforceable when there is
   exactly one place to audit.
 - `mock-resend-admin` is the `/_admin` surface — reset, inspect, advance an event, move
-  the clock, inject a fault — and later the embedded console assets. It is mounted on
-  the API listener under `/_admin`, which is safe because Resend's own paths are a fixed
-  set that will never include it.
+  the clock, inject a fault — and it serves the embedded console. It is mounted on the
+  API listener under `/_admin`, which is safe because Resend's own paths are a fixed set
+  that will never include it. The console lives under `/_admin/console/` for the same
+  reason: Resend owns `/emails/{id}`, so a console route of that shape at the root would
+  collide with the API it exists to show. The console is a viewer over this API and has
+  no privileges of its own; anything it can do, `curl` can do.
 - `mock-resend` is wiring only: parse arguments, build the engine, start the listeners.
   Keep `main.rs` thin.
 - `conformance` holds tests only and is never published. It depends on a real Resend

@@ -2,9 +2,20 @@
 # its own.
 /target
 
+# The console's dependencies are installed inside the image. Sending them is a quarter
+# of a gigabyte of context, and pnpm's symlink farm does not survive being tarred up —
+# the build fails on an unknown file mode rather than just being slow.
+/web/node_modules
+
+# Built in the image's own console stage, and copied from there.
+/web/dist
+/web/.vite
+
 # Nothing in the image needs the history, the CI config or the editor's opinions.
 /.git
 /.github
 /.claude
 /.agents
+
+# Captured mail from a local run.
 /data
