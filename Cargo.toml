@@ -4,7 +4,7 @@ default-members = ["crates/mock-resend"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
@@ -14,12 +14,12 @@ repository = "https://github.com/rapture-sh/mock-resend"
 # warns about one nothing depends on, so this list is exactly what the code compiles
 # against today. The settled stack is named in AGENTS.md.
 [workspace.dependencies]
-mock-resend-admin = { path = "crates/mock-resend-admin", version = "0.1.0" }
-mock-resend-api = { path = "crates/mock-resend-api", version = "0.1.0" }
-mock-resend-core = { path = "crates/mock-resend-core", version = "0.1.0" }
-mock-resend-smtp = { path = "crates/mock-resend-smtp", version = "0.1.0" }
-mock-resend-testkit = { path = "crates/mock-resend-testkit", version = "0.1.0" }
-mock-resend-webhooks = { path = "crates/mock-resend-webhooks", version = "0.1.0" }
+mock-resend-admin = { path = "crates/mock-resend-admin", version = "1.0.0" }
+mock-resend-api = { path = "crates/mock-resend-api", version = "1.0.0" }
+mock-resend-core = { path = "crates/mock-resend-core", version = "1.0.0" }
+mock-resend-smtp = { path = "crates/mock-resend-smtp", version = "1.0.0" }
+mock-resend-testkit = { path = "crates/mock-resend-testkit", version = "1.0.0" }
+mock-resend-webhooks = { path = "crates/mock-resend-webhooks", version = "1.0.0" }
 
 async-trait = "0.1.92"
 axum = "0.8.9"

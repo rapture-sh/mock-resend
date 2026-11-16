@@ -23,10 +23,10 @@ delivery event lifecycle with real signed webhooks, an SMTP listener sharing one
 with the API, scheduled sends you can fast-forward, idempotency keys, per-key isolation
 for parallel suites and fault injection. Kywi now consumes it like everyone else.
 
-**Status: pre-release.** This describes the target shape of the first tagged release, not
-a finished product. The admin API will break without ceremony until `0.1.0`.
-
-Everything below is working. The tables mark what is landed.
+Everything described below is working. Where mock-resend knowingly differs from real
+Resend, it is written down under [Known divergences](#known-divergences) rather than
+smoothed over — a mock that is subtly wrong is worse than no mock, because it makes
+broken code pass.
 
 
 Running it
@@ -81,12 +81,22 @@ Any API key works, as long as it looks like one — a `re_` prefix is all that i
 The key is not authentication here, it is the **namespace** (see Architecture), so give
 each test its own.
 
-The Node SDK takes a base URL in its constructor, and both the Node and Rust SDKs read
+**You do not need a different client.** Resend's own official SDKs take a custom base
+URL, so the same `resend` package your production code imports is the one that talks to
+this — no wrapper, no interface to stub, no second code path that only runs in tests.
+The Node SDK takes it in the constructor, and both the Node and Rust SDKs read
 `RESEND_BASE_URL` from the environment:
 
 ```ts
 const resend = new Resend("re_test", { baseUrl: "http://localhost:9100" });
 ```
+
+```bash
+RESEND_BASE_URL=http://localhost:9100
+```
+
+That environment variable is usually the whole integration: set it in your test or
+development environment and leave the code alone.
 
 For anything without a base-URL switch, point your HTTP client at `http://localhost:9100`
 instead of `https://api.resend.com`; the paths and payloads are identical.
@@ -95,22 +105,29 @@ instead of `https://api.resend.com`; the paths and payloads are identical.
 curl -X POST http://localhost:9100/emails -H "Authorization: Bearer re_test" -H "Content-Type: application/json" -d @email.json
 ```
 
+If you would rather not hand-roll that, [rapture-sh/mailer](https://github.com/rapture-sh/mailer)
+is the TypeScript client we use on top of this — a typed sending layer that points at
+Resend in production and at mock-resend everywhere else, by swapping the base URL.
+mock-resend does not depend on it and works with any Resend client; it is simply the
+other half of how we use it.
+
 
 Configuration
 -------------
 
-| Flag | Default | What it does | |
-| --- | --- | --- | --- |
-| `--host <addr>` | `0.0.0.0` | Address to bind the API to | ✅ |
-| `--port` | `9100` | Resend HTTP API port | ✅ |
-| `--log <level>` | `info` | `error`, `warn`, `info`, `debug`, `trace` | ✅ |
-| `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers | ✅ |
-| `--delivery-delay <ms>` | off | Deliver a captured message this long after it is sent | ✅ |
-| `--allow-public-webhooks` | off | Let webhooks reach public internet addresses | ✅ |
-| `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written | ✅ |
-| `--in-memory` | off | Keep everything in RAM and discard it on exit | ✅ |
-| `--smtp-port` | `1025` | SMTP listener port | ✅ |
-| `--no-smtp` | off | Disable the SMTP listener | ✅ |
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--host <addr>` | `0.0.0.0` | Address to bind the API to |
+| `--port` | `9100` | Resend HTTP API port |
+| `--log <level>` | `info` | `error`, `warn`, `info`, `debug`, `trace` |
+| `--rate-limit <n>` | off | Requests per second per key, with the `ratelimit-*` headers |
+| `--delivery-delay <ms>` | off | Deliver a captured message this long after it is sent |
+| `--allow-public-webhooks` | off | Let webhooks reach public internet addresses |
+| `--data <dir>` | `/data` in the image, `./data` otherwise | Where captured mail is written |
+| `--in-memory` | off | Keep everything in RAM and discard it on exit |
+| `--smtp-port` | `1025` | SMTP listener port |
+| `--no-smtp` | off | Disable the SMTP listener |
+| `--healthcheck` | — | Ask whether a server is already up on `--port`, then exit. What the image's `HEALTHCHECK` runs |
 
 Every flag has a `MOCK_RESEND_`-prefixed environment variable equivalent, which is usually
 easier in a compose file. `RUST_LOG` overrides `--log` with a full filter directive if you
@@ -172,23 +189,23 @@ in-process on a random port.
 Supported surface
 -----------------
 
-| Area | Endpoint | |
-| --- | --- | --- |
-| Send | `POST /emails` | ✅ |
-| Send | `POST /emails/batch`, with `x-batch-validation` | ✅ |
-| Manage | `GET /emails/{id}` | ✅ |
-| Manage | `PATCH /emails/{id}`, `POST /emails/{id}/cancel` | ✅ |
-| Protocol | `Bearer` auth, per-key isolation | ✅ |
-| Protocol | `Idempotency-Key`, with the 24 hour replay window | ✅ |
-| Protocol | `--rate-limit` with the `ratelimit-*` headers | ✅ |
-| Faults | Per-key error injection and delivery outcomes | ✅ |
-| Webhooks | Svix-signed delivery to per-key endpoints, with retries | ✅ |
-| Storage | One `.eml` per message under `--data`, reloaded on restart | ✅ |
-| SMTP | Plain SMTP on `:1025`, username `resend`, password any API key | ✅ |
-| Admin | The whole `/_admin` surface below | ✅ |
-| Console | The embedded web UI at `/_admin/console/` | ✅ |
+| Area | Endpoint |
+| --- | --- |
+| Send | `POST /emails` |
+| Send | `POST /emails/batch`, with `x-batch-validation` |
+| Manage | `GET /emails/{id}` |
+| Manage | `PATCH /emails/{id}`, `POST /emails/{id}/cancel` |
+| Protocol | `Bearer` auth, per-key isolation |
+| Protocol | `Idempotency-Key`, with the 24 hour replay window |
+| Protocol | `--rate-limit` with the `ratelimit-*` headers |
+| Faults | Per-key error injection and delivery outcomes |
+| Webhooks | Svix-signed delivery to per-key endpoints, with retries |
+| Storage | One `.eml` per message under `--data`, reloaded on restart |
+| SMTP | Plain SMTP on `:1025`, username `resend`, password any API key |
+| Admin | The whole `/_admin` surface below |
+| Console | The embedded web UI at `/_admin/console/` |
 
-Validation matches Resend's, because validation is most of what a mock is for. Landed:
+Validation matches Resend's, because validation is most of what a mock is for:
 the 50-recipient limit, the 100-message batch limit, the tag character set and length,
 `content` or `path` on an attachment but not neither, `template` being mutually exclusive
 with `html` and `text`, and the string-or-array forms of `to`, `cc`, `bcc` and
@@ -251,6 +268,10 @@ Unauthenticated, on the same listener under `/_admin`, and never rate limited �
 that has shut itself out still needs a working way to reset. It is not Resend's API and
 does not pretend to be; it exists so a suite in any language can drive the parts of a mail
 server you cannot normally drive.
+
+Because it is ours rather than Resend's, it is the one surface here that may change in a
+minor release. The Resend surface does not: code pointing at that is pointing at an API
+someone else designed.
 
 | Endpoint | What it does |
 | --- | --- |
@@ -391,8 +412,10 @@ Layout, conventions, testing and style are in [AGENTS.md](AGENTS.md). Publishing
 Contributions
 -------------
 
-Welcome, and you do not need permission to start. The pre-release state means there is
-plenty of obvious work available.
+Welcome, and you do not need permission to start. The [Out of scope](#out-of-scope)
+section is the honest list of what is missing, and the known divergences above are the
+places where someone who has checked against the live API could settle a question we
+could not.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md) first. The rule that
 outranks the rest: match real Resend, or document the divergence. Commits are `feat:` or
