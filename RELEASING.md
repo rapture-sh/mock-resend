@@ -24,12 +24,33 @@ Then check the three things CI cannot:
 git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
 ```
 
-`v`-prefixed tags are what the release workflow watches. Pushing one builds the
-container image for `linux/amd64` and `linux/arm64`, pushes it to
-`ghcr.io/rapture-sh/mock-resend` as both `:0.1.0` and `:latest`, and opens a draft
-GitHub release.
+`v`-prefixed tags are what the release workflow watches. Pushing one:
 
-The draft is deliberate: write the notes, then publish it.
+1. Builds the image on a machine of each architecture — `linux/amd64` and `linux/arm64`,
+   natively, not under QEMU — and pushes each by digest, with no tag attached.
+2. **Runs each image before anything is tagged.** Liveness, a message captured through
+   the API and read back by its id, a message captured over SMTP, and the console's
+   `<title>`, which is how a missing `web/dist` gets caught. A build that fails this
+   never becomes `:latest`.
+3. Stitches the two digests into one multi-architecture index and attaches the tags to
+   it: `0.1.0`, `0.1`, `0` and `latest`, so someone can pin exactly, follow patches,
+   follow minors, or just take the newest.
+4. Checks both architectures are actually in the published index.
+5. Updates the Docker Hub description from `README.md`, which is otherwise blank and is
+   the first thing anyone sees.
+6. Opens a draft GitHub release.
+
+The tags are attached in one step at the end, so there is never a moment where `:latest`
+means one architecture. The release build uses no cache, deliberately: a shared cache is
+a way for a poisoned entry to reach a published image, and a native build is a couple of
+minutes anyway.
+
+The draft is deliberate: write the notes, then publish it. The image is already out by
+that point, which is the right order — the notes point at something that exists.
+
+It needs two secrets on the repository, `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and
+the Blacksmith GitHub App for the native ARM runner. Without the app those jobs queue
+rather than fail; `release.yaml` says what to swap the labels for.
 
 ## What `:latest` means
 

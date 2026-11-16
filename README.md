@@ -33,19 +33,19 @@ Running it
 ----------
 
 ```bash
-docker run --rm -p 9100:9100 -p 1025:1025 -v mock-resend-data:/data ghcr.io/rapture-sh/mock-resend:latest
+docker run --rm -p 9100:9100 -p 1025:1025 -v mock-resend-data:/data raptureoss/mock-resend:latest
 ```
 
 Resend API on `:9100`, SMTP on `:1025`. Captured mail lives in the volume mounted at
 `/data`, so it survives a container restart and you can open the `.eml` files from the
 host.
 
-A [compose.yaml](compose.yaml) is in the repository, ready to copy:
+A [docker-compose.yml](docker-compose.yml) is in the repository, ready to copy:
 
 ```yaml
 services:
   email:
-    image: ghcr.io/rapture-sh/mock-resend:latest
+    image: raptureoss/mock-resend:latest
     ports:
       - "9100:9100"
       - "1025:1025"
