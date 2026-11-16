@@ -5,8 +5,8 @@ name: CI
 # image still builds and runs.
 #
 # That last one is here because of `.github/rulesets/tags.json`: a pushed tag cannot be
-# deleted or force-moved, so a release that falls over on a broken Dockerfile burns the
-# version number — you cannot retag v0.1.0, you ship v0.1.1 instead. Two minutes on a
+# deleted or force-moved by anyone, maintainers included, so a release that falls over on
+# a broken Dockerfile burns the version number — you cannot retag v0.1.0, you ship v0.1.1 instead. Two minutes on a
 # pull request is cheaper than that. The release workflow still smoke-tests both
 # architectures before anything is tagged; this is the earlier, cheaper copy of the same
 # question.
