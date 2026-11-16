@@ -37,9 +37,12 @@ jobs:
     # Blacksmith GitHub App installed on the repository; a fork without it sees the job
     # queue forever rather than fail, which is a confusing way to find out. Swap it for
     # `ubuntu-latest`, which is free for public repositories and works the same way.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    #
+    # Two vCPU because larger sizes behave the same way as a missing app — accepted,
+    # then queued without ever being picked up. Raise it if the plan changes.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml pins the version, so rustup installs it from the checkout and
       # this needs no version here.
@@ -47,6 +50,15 @@ jobs:
         run: rustup show
 
       # Without this, every run recompiles the whole dependency tree.
+      #
+      # It may do nothing, and the warning it prints is not worth chasing. Blacksmith
+      # intercepts the Actions cache API transparently, and their service can answer
+      # every call for a repository it has not picked up with
+      # `400 Default branch not found for repository`, which fails both the restore and
+      # the save. That is their end, not this file, and the same error hits
+      # `actions/setup-node` in the console job. The job still finishes cold in a couple
+      # of minutes; if the warning is still there whenever anyone next reads this,
+      # delete the step rather than debugging it.
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo fmt --all --check
@@ -62,13 +74,17 @@ jobs:
     # A pnpm build does not need four cores.
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      # The version comes from `packageManager` in web/package.json, so corepack uses the
-      # exact pnpm that wrote the lockfile.
-      - uses: pnpm/action-setup@v4
+      # The version comes from `packageManager` in web/package.json, so the exact pnpm
+      # that wrote the lockfile is used. `package_json_file` is not optional here:
+      # without it the action reads the repository root, which holds no package.json at
+      # all, and the job fails before it installs anything.
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -88,23 +104,26 @@ jobs:
 
   image:
     name: Image
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: useblacksmith/setup-docker-builder@v1
 
       # One architecture only. The release workflow builds both natively; this is
       # asking whether the Dockerfile still works at all, which amd64 answers.
+      #
+      # No `cache-from`/`cache-to`. The Blacksmith builder above caches layers on its
+      # own, and pointing this at `type=gha` as well puts the build on the same Actions
+      # cache API that answers `400` for a repository Blacksmith has not picked up —
+      # a cache export failure that can take the build down with it.
       - name: Build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           push: false
           load: true
           tags: mock-resend:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       # The same questions the release smoke test asks, minus the SMTP round trip:
       # does it come up, does it capture a message, and is the console in there.

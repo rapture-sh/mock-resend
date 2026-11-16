@@ -8,14 +8,14 @@ name: Release
 # the newest commit, or anyone who wrote `image: raptureoss/mock-resend` in a compose
 # file is running whatever landed on main an hour ago.
 #
-# Each architecture builds on a machine of that architecture, via Blacksmith. The
-# alternative is QEMU, which emulates an ARM CPU to run rustc — for a release build with
-# fat LTO that turns a few minutes into the better part of an hour.
+# Each architecture builds on a machine of that architecture. The alternative is QEMU,
+# which emulates an ARM CPU to run rustc — for a release build with fat LTO that turns a
+# few minutes into the better part of an hour.
 #
-# The blacksmith-* labels need the Blacksmith GitHub App installed on the repository. A
-# fork without it sees these jobs queue forever rather than fail, which is a confusing
-# way to find out: swap them for `ubuntu-latest` and `ubuntu-24.04-arm`, both of which
-# are free for public repositories and work the same way.
+# The blacksmith-* label needs the Blacksmith GitHub App installed on the repository. A
+# fork without it sees that job queue forever rather than fail, which is a confusing way
+# to find out: swap it for `ubuntu-latest`, which is free for public repositories and
+# works the same way.
 
 on:
   push:
@@ -38,16 +38,22 @@ jobs:
       matrix:
         include:
           - platform: linux/amd64
-            runner: blacksmith-4vcpu-ubuntu-2404
+            # Two vCPU because larger Blacksmith sizes are accepted and then queue
+            # without ever being picked up on the current plan. Raise it if that changes.
+            runner: blacksmith-2vcpu-ubuntu-2404
           - platform: linux/arm64
-            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            # GitHub's own ARM runner, not Blacksmith. The blacksmith-*-arm labels are
+            # not served on this account's plan: a job asking for one is accepted and
+            # then queues forever rather than failing, which is a slow way to find out.
+            # This one is native ARM and free for public repositories.
+            runner: ubuntu-24.04-arm
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -57,7 +63,7 @@ jobs:
       # so there is never a moment where `latest` means one architecture.
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -135,7 +141,7 @@ jobs:
           mkdir -p /tmp/digests
           touch "/tmp/digests/${DIGEST#sha256:}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: digest-${{ strategy.job-index }}
           path: /tmp/digests/*
@@ -147,33 +153,36 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/digests
           pattern: digest-*
           merge-multiple: true
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # v1.2.3 becomes 1.2.3, 1.2, 1 and latest, all pointing at one index. Someone can
       # pin exactly, follow patches, follow minors, or just take the newest.
+      #
+      # `latest` is not listed: the action's default `flavor: latest=auto` adds it for a
+      # release tag and withholds it for a prerelease, which is what we want. Listing it
+      # as well produced it twice.
       - name: Work out the tags
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ${{ env.DOCKERHUB_IMAGE }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            type=raw,value=latest
 
       - name: Create the multi-architecture index
         working-directory: /tmp/digests
@@ -190,8 +199,15 @@ jobs:
 
       # Docker Hub shows its own README on the image page, separate from the one on
       # GitHub. Without this step it is blank, which is the first thing anyone sees.
+      #
+      # Not allowed to fail the release. By the time it runs the image is already pushed
+      # and the index already stitched, so failing here marks a release that shipped as a
+      # failure and tells nobody anything useful. It needs a Docker Hub access token with
+      # `read/write/delete` scope: a narrower one pushes images happily and then returns
+      # `Forbidden` on this one call.
       - name: Update the Docker Hub description
-        uses: peter-evans/dockerhub-description@v4
+        continue-on-error: true
+        uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -206,12 +222,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A draft on purpose: the notes are written by a person, and publishing is the
       # last deliberate step. The image is already out by this point, which is the right
       # order — the release notes point at something that exists.
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true

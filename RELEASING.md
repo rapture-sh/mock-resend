@@ -10,9 +10,10 @@ cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warni
 
 Then check the three things CI cannot:
 
-- **`README.md` matches reality.** The supported-surface and configuration tables carry a
-  landed marker per row. A row that says a thing works has to actually work, and a
-  divergence that is still there has to still be listed under Known divergences.
+- **`README.md` matches reality.** Every row of the supported-surface and configuration
+  tables is a claim that the thing works, and a divergence that is still there has to
+  still be listed under Known divergences. The Docker Hub page is this file, so a wrong
+  line here is wrong in the first place anyone looks.
 - **The version in `Cargo.toml` is the version you are about to tag.** It is a workspace
   field, so every crate moves together.
 - **`cargo xtask docker` builds and the image starts.** CI does this on every pull
@@ -21,7 +22,7 @@ Then check the three things CI cannot:
 ## Tagging
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
+git tag -a v1.0.0 -m "v1.0.0" && git push origin v1.0.0
 ```
 
 `v`-prefixed tags are what the release workflow watches. Pushing one:
@@ -33,7 +34,7 @@ git tag -a v0.1.0 -m "v0.1.0" && git push origin v0.1.0
    `<title>`, which is how a missing `web/dist` gets caught. A build that fails this
    never becomes `:latest`.
 3. Stitches the two digests into one multi-architecture index and attaches the tags to
-   it: `0.1.0`, `0.1`, `0` and `latest`, so someone can pin exactly, follow patches,
+   it: `1.0.0`, `1.0`, `1` and `latest`, so someone can pin exactly, follow patches,
    follow minors, or just take the newest.
 4. Checks both architectures are actually in the published index.
 5. Updates the Docker Hub description from `README.md`, which is otherwise blank and is
@@ -48,9 +49,19 @@ minutes anyway.
 The draft is deliberate: write the notes, then publish it. The image is already out by
 that point, which is the right order — the notes point at something that exists.
 
-It needs two secrets on the repository, `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`, and
-the Blacksmith GitHub App for the native ARM runner. Without the app those jobs queue
-rather than fail; `release.yaml` says what to swap the labels for.
+It needs two secrets on the repository, `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
+
+**Give that token `read/write/delete` scope.** A narrower one pushes images perfectly
+well and then returns `Forbidden` on the description sync alone, which is a confusing
+way to lose a step at the very end of a release. That step is `continue-on-error`
+precisely because it runs after the image is already published: if it fails, the release
+still shipped, and the description can be pasted into Docker Hub by hand.
+
+The amd64 build wants the Blacksmith GitHub App installed on the repository. Without it
+that job queues rather than fails, which is a slow way to find out; `release.yaml` says
+what to swap the label for. The arm64 build uses GitHub's own `ubuntu-24.04-arm`, which
+needs nothing — the `blacksmith-*-arm` labels are **not** served on this account's plan
+and a job asking for one queues forever.
 
 ## What `:latest` means
 
@@ -59,12 +70,14 @@ keep working, so nothing reaches that tag without a version number attached to i
 
 ## Versioning
 
-While the major is `0`, the minor is where breaking changes go.
+Semantic versioning from `1.0.0` onwards: breaking changes go in a major release.
 
-Two things are specifically allowed to break in a minor release, and the README says so:
-the `/_admin` surface, and anything listed as a divergence from real Resend. The Resend
-surface itself is the thing that has to stay still — code pointing at it is pointing at
-an API someone else designed, and this project does not get to change it.
+Two things are specifically allowed to change in a minor release: the `/_admin` surface,
+and anything listed as a divergence from real Resend — a divergence being closed is a
+fix, even when a test was relying on it. The Resend surface itself is the thing that has
+to stay still, and a major version does not license changing it either: code pointing at
+it is pointing at an API someone else designed, and this project does not get to
+redesign it.
 
 ## If a release is wrong
 
