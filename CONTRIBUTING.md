@@ -150,6 +150,54 @@ Branches: `feat/<short-name>` or `fix/<short-name>`, cut from `main`.
 Reviews are about the code, never the person. See
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
+## Repository settings
+
+The rules on this repository are kept as files rather than as clicks in a settings page,
+so a change to them is reviewable like anything else.
+
+[`.github/rulesets/main.json`](.github/rulesets/main.json) protects the default branch:
+pull request required with one approval, both CI checks green, linear history, no force
+pushes, no deletion, and squash as the only merge method.
+
+Organization admins and anyone with the repository's admin or maintain role bypass it, so
+a maintainer can still push straight to `main` when that is the right thing to do. The
+rules are there to stop a drive-by contribution landing unreviewed, not to stop you
+working.
+
+[`.github/rulesets/tags.json`](.github/rulesets/tags.json) protects `refs/tags/v*` from
+deletion and from being force-moved. Release tags are what the published image tags are
+derived from, so a tag that can be rewritten is a version number that cannot be trusted.
+
+Apply or update either with:
+
+```bash
+gh api -X POST repos/rapture-sh/mock-resend/rulesets --input .github/rulesets/main.json
+```
+
+```bash
+gh api repos/rapture-sh/mock-resend/rulesets
+```
+
+```bash
+gh api -X PUT repos/rapture-sh/mock-resend/rulesets/<id> --input .github/rulesets/main.json
+```
+
+Neither ruleset has a `creation` rule, so the first push that creates `main` is not
+blocked by it. If a later direct push is ever rejected with "Changes must be made through
+a pull request", the bypass is not matching you, and the fix is one call:
+
+```bash
+gh api -X PUT repos/rapture-sh/mock-resend/rulesets/<id> --input .github/rulesets/main.json -f enforcement=disabled
+```
+
+The required checks are named `Rust` and `Console`, which are the job *names* in
+[`ci.yaml`](.github/workflows/ci.yaml). Renaming a job without renaming it here silently
+stops it gating the branch.
+
+Squash is the only merge method on purpose: the pull request title becomes the commit
+message, which is what keeps `main` to the one-line `feat:`/`fix:` convention without
+anyone having to police it.
+
 ## Forking
 
 Fork it, run your own copy, build something else on top; that is what MIT is for.
