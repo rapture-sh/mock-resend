@@ -33,6 +33,12 @@ pub trait Store: Send + Sync + 'static {
     /// Discards everything under `key`, or everything in the store when `key` is `None`.
     async fn reset(&self, key: Option<&ApiKey>) -> Result<()>;
 
+    /// Returns every key that has captured mail, in no particular order.
+    ///
+    /// The console needs this because nothing hands it a key: a developer opens it to
+    /// find out what their suite sent, under whatever keys the suite happened to use.
+    async fn keys(&self) -> Result<Vec<ApiKey>>;
+
     /// Returns every message that is not at a terminal event, across all keys.
     ///
     /// Crosses namespaces because the clock does: a tick has to find work under every

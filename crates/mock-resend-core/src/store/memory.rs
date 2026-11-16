@@ -110,6 +110,12 @@ impl Store for MemoryStore {
         Ok(())
     }
 
+    async fn keys(&self) -> Result<Vec<ApiKey>> {
+        let namespaces = self.namespaces.read().map_err(|_| poisoned())?;
+
+        Ok(namespaces.keys().cloned().collect())
+    }
+
     async fn in_flight(&self) -> Result<Vec<Message>> {
         let namespaces = self.namespaces.read().map_err(|_| poisoned())?;
 
@@ -156,6 +162,7 @@ mod memory_store {
             scheduled_at: None,
             created_at: DateTime::<Utc>::UNIX_EPOCH,
             last_event: EmailEvent::Sent,
+            origin: Default::default(),
             message_id: None,
         }
     }

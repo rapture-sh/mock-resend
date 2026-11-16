@@ -23,7 +23,7 @@ pub mod store;
 pub mod webhook;
 
 pub use engine::{
-    BatchFailure, BatchOutcome, BatchValidation, Engine, MAX_BATCH, Stats, Transition,
+    BatchFailure, BatchOutcome, BatchValidation, Engine, KeySummary, MAX_BATCH, Stats, Transition,
 };
 pub use error::{Error, Result};
 pub use events::{ALL_EVENTS, EmailEvent};
@@ -33,7 +33,7 @@ pub use fault::{
 pub use idempotency::{IdempotencyKey, Outcome as IdempotentOutcome};
 pub use mailbox::SendEmail;
 pub use mime::Envelope;
-pub use model::{ApiKey, Attachment, AttachmentSource, EmailId, Message, Tag};
+pub use model::{ApiKey, Attachment, AttachmentSource, EmailId, Message, Origin, Tag};
 pub use schedule::{Clock, SystemClock, TestClock};
 pub use store::{Store, disk::DiskStore, memory::MemoryStore};
 pub use webhook::{SigningSecret, WebhookEndpoint, WebhookId, Webhooks};

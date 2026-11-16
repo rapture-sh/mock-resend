@@ -5,21 +5,21 @@
 //! moving it from a Rust test do the same thing.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, body::Bytes};
 use mock_resend_api::ApiError;
 use mock_resend_core::{
-    DeliveryRule, EmailEvent, EmailId, Engine, Error as EngineError, FaultRule, ResendError,
-    Transition, WebhookId, fault,
+    AttachmentSource, DeliveryRule, EmailEvent, EmailId, Engine, Error as EngineError, FaultRule,
+    ResendError, Transition, WebhookId, fault,
 };
 
 use crate::timestamp;
 use crate::wire::{
     AdvanceClockRequest, AdvanceClockResponse, AdvanceEventRequest, CapturedEmail, DeliveryRequest,
-    EmailListResponse, FaultRequest, HealthResponse, KeyQuery, ResetResponse, ScopeRequest,
-    StatsResponse, StatusResponse, TransitionResponse, WebhookListResponse, WebhookRequest,
-    WebhookView,
+    DownloadQuery, EmailListResponse, FaultRequest, HealthResponse, KeyListResponse, KeyQuery,
+    KeyView, MailboxQuery, ResetResponse, ScopeRequest, StatsResponse, StatusResponse,
+    TransitionResponse, WebhookListResponse, WebhookRequest, WebhookView,
 };
 
 /// `GET /_admin/health`
@@ -347,4 +347,153 @@ fn parse_optional_body<T: serde::de::DeserializeOwned + Default>(
     }
 
     parse_body(body)
+}
+
+/// `GET /_admin/keys`
+///
+/// Every key that has captured mail, most recently used first. The console starts here,
+/// because nothing hands it a key.
+pub async fn list_keys(State(engine): State<Engine>) -> Result<Json<KeyListResponse>, ApiError> {
+    let data: Vec<KeyView> = engine
+        .key_summaries()
+        .await?
+        .into_iter()
+        .map(KeyView::from)
+        .collect();
+
+    Ok(Json(KeyListResponse {
+        count: data.len(),
+        data,
+    }))
+}
+
+/// `GET /_admin/mailbox?api_key=&limit=`
+///
+/// Captured mail across every key, newest first, or one key's when `api_key` is given.
+///
+/// Separate from `/_admin/emails`, which is scoped and stays that way: this one is the
+/// console's view, and it deliberately crosses keys.
+pub async fn mailbox(
+    State(engine): State<Engine>,
+    Query(query): Query<MailboxQuery>,
+) -> Result<Json<EmailListResponse>, ApiError> {
+    let messages = match query.key()? {
+        Some(key) => {
+            let mut messages = engine.list_emails(&key).await?;
+            messages.reverse();
+            messages
+        }
+        None => engine.list_all_emails(query.limit()).await?,
+    };
+
+    let data: Vec<CapturedEmail> = messages.into_iter().map(CapturedEmail::from).collect();
+
+    Ok(Json(EmailListResponse {
+        count: data.len(),
+        data,
+    }))
+}
+
+/// `GET /_admin/mailbox/{id}`
+///
+/// One captured message, found without being told which key owns it.
+pub async fn mailbox_email(
+    State(engine): State<Engine>,
+    Path(id): Path<String>,
+) -> Result<Json<CapturedEmail>, ApiError> {
+    let id: EmailId = id.parse()?;
+
+    Ok(Json(CapturedEmail::from(engine.find_email(&id).await?)))
+}
+
+/// `GET /_admin/mailbox/{id}/raw`
+///
+/// The message as an RFC 5322 `.eml`, which is the same thing the disk backend writes.
+///
+/// Served as `text/plain` rather than `message/rfc822` so a browser shows it instead of
+/// downloading it: the console's Raw tab is the main reader.
+pub async fn mailbox_raw(
+    State(engine): State<Engine>,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let id: EmailId = id.parse()?;
+    let message = engine.find_email(&id).await?;
+    let eml = mock_resend_core::mime::to_eml(&message)?;
+
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        eml,
+    )
+        .into_response())
+}
+
+/// `GET /_admin/mailbox/{id}/attachments/{index}?download=1`
+///
+/// One attachment's bytes, with the content type it declared.
+///
+/// Addressed by position rather than by filename: an attachment filename is a
+/// caller-supplied string that can repeat, be empty, or contain anything at all, and the
+/// one thing it must never become is part of a path.
+pub async fn mailbox_attachment(
+    State(engine): State<Engine>,
+    Path((id, index)): Path<(String, usize)>,
+    Query(query): Query<DownloadQuery>,
+) -> Result<Response, ApiError> {
+    let id: EmailId = id.parse()?;
+    let message = engine.find_email(&id).await?;
+
+    let attachment = message
+        .attachments
+        .get(index)
+        .ok_or(mock_resend_core::Error::NotFound)?;
+
+    let AttachmentSource::Content(content) = &attachment.source else {
+        return Err(ApiError::validation(
+            "This attachment was sent as a `path`, and mock-resend never fetches one, so there are no bytes to serve.",
+        ));
+    };
+
+    let content_type = attachment
+        .content_type
+        .clone()
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+
+    let mut headers = HeaderMap::new();
+
+    if let Ok(value) = HeaderValue::from_str(&content_type) {
+        let _set = headers.insert(header::CONTENT_TYPE, value);
+    }
+
+    if query.download() {
+        // The filename is quoted and stripped of anything that could end the header.
+        // It is a caller-supplied string, and this is a response header.
+        let filename = safe_filename(attachment.filename.as_deref());
+
+        if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
+            let _set = headers.insert(header::CONTENT_DISPOSITION, value);
+        }
+    }
+
+    Ok((StatusCode::OK, headers, content.clone()).into_response())
+}
+
+/// A filename safe to put in a `Content-Disposition` header.
+///
+/// Quotes and control characters are removed rather than escaped: this is a convenience
+/// for a browser's save dialog, not a round trip, and a header a caller can break is a
+/// header a caller can forge.
+fn safe_filename(filename: Option<&str>) -> String {
+    let cleaned: String = filename
+        .unwrap_or("attachment")
+        .chars()
+        .filter(|character| !character.is_control() && *character != '"' && *character != '\\')
+        .take(120)
+        .collect();
+
+    if cleaned.trim().is_empty() {
+        "attachment".to_owned()
+    } else {
+        cleaned
+    }
 }

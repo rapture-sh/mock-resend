@@ -321,6 +321,12 @@ impl Store for DiskStore {
         Ok(())
     }
 
+    async fn keys(&self) -> Result<Vec<ApiKey>> {
+        let order = self.order.read().map_err(|_| poisoned())?;
+
+        Ok(order.keys().cloned().collect())
+    }
+
     async fn in_flight(&self) -> Result<Vec<Message>> {
         let keys: Vec<ApiKey> = {
             let order = self.order.read().map_err(|_| poisoned())?;
@@ -405,6 +411,7 @@ mod disk_store {
             scheduled_at: None,
             created_at,
             last_event: EmailEvent::Sent,
+            origin: Default::default(),
             message_id: Some("<abc@mock-resend.invalid>".to_owned()),
         }
     }

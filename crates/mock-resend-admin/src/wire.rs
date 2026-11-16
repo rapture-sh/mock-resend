@@ -8,7 +8,8 @@
 use std::collections::BTreeMap;
 
 use mock_resend_core::{
-    ApiKey, EmailEvent, Error as EngineError, FaultTarget, Message, Stats, WebhookEndpoint,
+    ApiKey, EmailEvent, Error as EngineError, FaultTarget, KeySummary, Message, Stats,
+    WebhookEndpoint,
 };
 use serde::{Deserialize, Serialize};
 
@@ -134,6 +135,14 @@ pub struct CapturedEmail {
     pub created_at: String,
     /// Its most recent delivery event.
     pub last_event: String,
+    /// Which way in it arrived: `api` or `smtp`.
+    pub origin: &'static str,
+    /// How the console labels that: `POST /emails` or `SMTP`.
+    pub origin_label: &'static str,
+    /// The key that owns it.
+    ///
+    /// The console lists across keys, so a row has to say which mailbox it came from.
+    pub api_key: String,
 }
 
 /// A tag, as the send request wrote it.
@@ -196,6 +205,9 @@ impl From<Message> for CapturedEmail {
             scheduled_at: message.scheduled_at.map(crate::timestamp),
             created_at: crate::timestamp(message.created_at),
             last_event: message.last_event.as_str().to_owned(),
+            origin: message.origin.as_str(),
+            origin_label: message.origin.label(),
+            api_key: message.key.as_str().to_owned(),
         }
     }
 }
@@ -504,4 +516,91 @@ pub struct HealthResponse {
     pub version: &'static str,
     /// The engine's current time, which may be ahead of the wall clock.
     pub now: String,
+}
+
+/// A query naming an optional key, and how many messages to return.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MailboxQuery {
+    /// The key to read, or absent for every key.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// How many messages to return. Capped.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// The most messages one mailbox read will return.
+///
+/// A console is a viewer, and a thousand rows is already more than anyone scrolls. The
+/// cap exists so that a suite which sent a hundred thousand messages does not serialise
+/// all of them into a browser tab.
+pub const MAX_MAILBOX: usize = 1_000;
+
+impl MailboxQuery {
+    /// Parses the key, if one was given.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineError::MissingApiKey`] when the value is present but not a Resend key.
+    pub fn key(&self) -> Result<Option<ApiKey>, EngineError> {
+        self.api_key
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(ApiKey::parse)
+            .transpose()
+    }
+
+    /// How many to return, within the cap.
+    #[must_use]
+    pub fn limit(&self) -> usize {
+        self.limit.unwrap_or(200).clamp(1, MAX_MAILBOX)
+    }
+}
+
+/// A query asking for a file rather than a preview.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DownloadQuery {
+    /// Any non-empty value turns it on.
+    #[serde(default)]
+    pub download: Option<String>,
+}
+
+impl DownloadQuery {
+    /// Whether the caller wants a save dialog.
+    #[must_use]
+    pub fn download(&self) -> bool {
+        self.download
+            .as_deref()
+            .is_some_and(|value| !value.is_empty() && value != "0" && value != "false")
+    }
+}
+
+/// One key, as the console lists it.
+#[derive(Debug, Clone, Serialize)]
+pub struct KeyView {
+    /// The key itself. Shown in full: it is a namespace, not a secret.
+    pub api_key: String,
+    /// How many messages it holds.
+    pub captured: usize,
+    /// When the most recent one arrived.
+    pub last_captured_at: Option<String>,
+}
+
+impl From<KeySummary> for KeyView {
+    fn from(summary: KeySummary) -> Self {
+        Self {
+            api_key: summary.key.as_str().to_owned(),
+            captured: summary.captured,
+            last_captured_at: summary.last_captured_at.map(crate::timestamp),
+        }
+    }
+}
+
+/// The keys that have captured mail.
+#[derive(Debug, Clone, Serialize)]
+pub struct KeyListResponse {
+    /// How many there are.
+    pub count: usize,
+    /// The keys, most recently used first.
+    pub data: Vec<KeyView>,
 }

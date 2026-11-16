@@ -57,6 +57,8 @@ pub struct SendEmail {
     pub template: Option<String>,
     /// When the send is due.
     pub scheduled_at: Option<DateTime<Utc>>,
+    /// Which way in the request arrived. The API is the default; SMTP says so.
+    pub origin: crate::model::Origin,
 }
 
 impl SendEmail {

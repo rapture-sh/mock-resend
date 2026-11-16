@@ -1,10 +1,11 @@
 //! The `/_admin` route table.
 
 use axum::Router;
+use axum::extract::Path;
 use axum::routing::{get, post};
 use mock_resend_core::Engine;
 
-use crate::routes;
+use crate::{console, routes};
 
 /// Builds the admin router, already nested under `/_admin`.
 ///
@@ -33,7 +34,31 @@ pub fn router(engine: Engine) -> Router {
             axum::routing::delete(routes::remove_webhook),
         )
         .route("/stats", get(routes::stats))
+        // The console's own reads. Separate from `/emails`, which stays scoped to one
+        // key: these deliberately cross keys, because nothing hands a console a key.
+        .route("/keys", get(routes::list_keys))
+        .route("/mailbox", get(routes::mailbox))
+        .route("/mailbox/{id}", get(routes::mailbox_email))
+        .route("/mailbox/{id}/raw", get(routes::mailbox_raw))
+        .route(
+            "/mailbox/{id}/attachments/{index}",
+            get(routes::mailbox_attachment),
+        )
         .with_state(engine);
 
-    Router::new().nest("/_admin", admin)
+    Router::new()
+        .nest("/_admin", admin)
+        // The console, and a way into it. `GET /` is not a Resend endpoint, so there is
+        // nothing to collide with, and typing a port into a browser is how most people
+        // will first meet this.
+        .route("/", get(|| async { console::redirect_to_console() }))
+        .route(
+            "/_admin/console",
+            get(|| async { console::redirect_to_console() }),
+        )
+        .route("/_admin/console/", get(|| async { console::index() }))
+        .route(
+            "/_admin/console/{*path}",
+            get(|Path(path): Path<String>| async move { console::serve(&path) }),
+        )
 }

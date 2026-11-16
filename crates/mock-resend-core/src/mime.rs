@@ -26,7 +26,7 @@ use mail_parser::MimeHeaders as _;
 
 use crate::error::{Error, Result};
 use crate::events::EmailEvent;
-use crate::model::{ApiKey, Attachment, AttachmentSource, EmailId, Message, Tag};
+use crate::model::{ApiKey, Attachment, AttachmentSource, EmailId, Message, Origin, Tag};
 
 /// The prefix for every header that carries mock-resend's own state.
 pub const PRIVATE_PREFIX: &str = "X-Mock-Resend-";
@@ -51,6 +51,9 @@ const HEADER_TEMPLATE: &str = "X-Mock-Resend-Template";
 
 /// One tag, as `name=value`. Repeated once per tag.
 const HEADER_TAG: &str = "X-Mock-Resend-Tag";
+
+/// Which way in the message arrived.
+const HEADER_ORIGIN: &str = "X-Mock-Resend-Origin";
 
 /// A `path` attachment, as `filename=url`. Repeated once per attachment.
 ///
@@ -103,7 +106,8 @@ pub fn to_eml(message: &Message) -> Result<Vec<u8>> {
         .header(HEADER_KEY, Raw::new(message.key.as_str().to_owned()))
         .header(HEADER_ID, Raw::new(message.id.to_string()))
         .header(HEADER_EVENT, Raw::new(message.last_event.as_str()))
-        .header(HEADER_CREATED, Raw::new(message.created_at.to_rfc3339()));
+        .header(HEADER_CREATED, Raw::new(message.created_at.to_rfc3339()))
+        .header(HEADER_ORIGIN, Raw::new(message.origin.as_str()));
 
     if let Some(scheduled_at) = message.scheduled_at {
         builder = builder.header(HEADER_SCHEDULED, Raw::new(scheduled_at.to_rfc3339()));
@@ -323,6 +327,11 @@ pub fn from_eml(raw: &[u8]) -> Result<Message> {
         scheduled_at,
         created_at,
         last_event,
+        // An `.eml` written before this field existed has no origin header, and the API
+        // is the truthful guess: the SMTP listener landed after it.
+        origin: private(HEADER_ORIGIN)
+            .map(|value| Origin::parse(&value))
+            .unwrap_or_default(),
         message_id: parsed.message_id().map(|id| format!("<{id}>")),
     })
 }
@@ -558,6 +567,7 @@ pub fn inbound_to_send(raw: &[u8], envelope: &Envelope) -> Result<crate::mailbox
         tags: Vec::new(),
         template: None,
         scheduled_at: None,
+        origin: crate::model::Origin::Smtp,
     })
 }
 
@@ -604,6 +614,7 @@ mod round_trip {
                 .single()
                 .expect("a real instant"),
             last_event: EmailEvent::Sent,
+            origin: Default::default(),
             message_id: Some("<abc-123@mock-resend.invalid>".to_owned()),
         }
     }

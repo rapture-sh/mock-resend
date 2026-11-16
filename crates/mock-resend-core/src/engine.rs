@@ -212,6 +212,7 @@ impl Engine {
             scheduled_at: request.scheduled_at,
             created_at: now,
             last_event,
+            origin: request.origin,
             message_id: Some(message_id_for(id)),
         };
 
@@ -655,6 +656,109 @@ impl Engine {
         self.webhooks.reset(key)?;
         self.store.reset(key).await
     }
+
+    /// Every key that has captured mail.
+    ///
+    /// The console needs this because nothing hands it a key: a developer opens it to
+    /// find out what their suite sent, under whatever keys the suite happened to use.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] if the backend fails.
+    pub async fn keys(&self) -> Result<Vec<ApiKey>> {
+        let mut keys = self.store.keys().await?;
+        keys.sort();
+
+        Ok(keys)
+    }
+
+    /// What each key has captured, newest first.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] if the backend fails.
+    pub async fn key_summaries(&self) -> Result<Vec<KeySummary>> {
+        let mut summaries = Vec::new();
+
+        for key in self.keys().await? {
+            let messages = self.store.list(&key).await?;
+
+            summaries.push(KeySummary {
+                captured: messages.len(),
+                last_captured_at: messages.iter().map(|message| message.created_at).max(),
+                key,
+            });
+        }
+
+        // Most recently used first: a console open beside a test run wants the key that
+        // is doing something, not the one that is alphabetically first.
+        summaries.sort_by(|left, right| {
+            right
+                .last_captured_at
+                .cmp(&left.last_captured_at)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        Ok(summaries)
+    }
+
+    /// Captured mail across every key, newest first.
+    ///
+    /// Not a Resend endpoint, and deliberately not scoped: the console's whole job is to
+    /// show what a suite sent, and a suite gives every test its own key.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Store`] if the backend fails.
+    pub async fn list_all_emails(&self, limit: usize) -> Result<Vec<Message>> {
+        let mut messages = Vec::new();
+
+        for key in self.keys().await? {
+            messages.extend(self.store.list(&key).await?);
+        }
+
+        // Ties broken by id so the order is stable: a test clock can hand out the same
+        // instant twice, and a list that reshuffles between polls is unreadable.
+        messages.sort_by(|left, right| {
+            right
+                .created_at
+                .cmp(&left.created_at)
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        messages.truncate(limit);
+
+        Ok(messages)
+    }
+
+    /// Finds a message by id without being told which key owns it.
+    ///
+    /// For the console, which follows a link rather than knowing a key. The Resend
+    /// surface never uses this: there, a message belongs to the key that asks for it,
+    /// and that is the isolation guarantee.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::NotFound`] when no key has it, or [`Error::Store`] if the backend fails.
+    pub async fn find_email(&self, id: &EmailId) -> Result<Message> {
+        for key in self.keys().await? {
+            if let Some(message) = self.store.get(&key, id).await? {
+                return Ok(message);
+            }
+        }
+
+        Err(Error::NotFound)
+    }
+}
+
+/// What one key has captured.
+#[derive(Debug, Clone)]
+pub struct KeySummary {
+    /// The key itself.
+    pub key: ApiKey,
+    /// How many messages it holds.
+    pub captured: usize,
+    /// When the most recent one arrived, if there is one.
+    pub last_captured_at: Option<DateTime<Utc>>,
 }
 
 /// Resend's ceiling for one batch call.

@@ -91,6 +91,58 @@ impl fmt::Display for ApiKey {
     }
 }
 
+/// How a message reached the server.
+///
+/// Resend's own console shows the API call that created a message; this is the same
+/// idea, and it also answers the question an SMTP user actually has — "did my client
+/// reach the server, or am I looking at something else?"
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Origin {
+    /// `POST /emails` or `POST /emails/batch`.
+    #[default]
+    Api,
+    /// The SMTP listener.
+    Smtp,
+}
+
+impl Origin {
+    /// The wire form.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Api => "api",
+            Self::Smtp => "smtp",
+        }
+    }
+
+    /// Parses the wire form, defaulting to the API for anything unrecognised.
+    ///
+    /// An older `.eml` written before this field existed has no origin header, and the
+    /// API is the truthful guess: the SMTP listener landed after it.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value.trim() {
+            "smtp" => Self::Smtp,
+            _ => Self::Api,
+        }
+    }
+
+    /// How the console labels it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Api => "POST /emails",
+            Self::Smtp => "SMTP",
+        }
+    }
+}
+
+impl fmt::Display for Origin {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Where an attachment's bytes come from.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AttachmentSource {
@@ -166,10 +218,12 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
     /// The most recent delivery event.
     pub last_event: EmailEvent,
+    /// Which way in the message arrived.
+    pub origin: Origin,
     /// The RFC 5322 `Message-ID`.
     ///
-    /// Absent until the message is actually handed off, which is why Resend omits it on
-    /// `email.scheduled`.
+    /// Minted at capture, including for a scheduled send: Resend's own documented
+    /// `email.scheduled` payload carries one.
     pub message_id: Option<String>,
 }
 

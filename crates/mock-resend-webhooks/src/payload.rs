@@ -223,6 +223,7 @@ mod build {
                 .single()
                 .expect("a real instant"),
             last_event: EmailEvent::Sent,
+            origin: Default::default(),
             message_id: Some("<111-222-333@example.com>".to_owned()),
         }
     }

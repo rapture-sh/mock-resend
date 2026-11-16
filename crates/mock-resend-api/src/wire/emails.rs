@@ -179,6 +179,8 @@ impl SendEmailRequest {
                 .collect(),
             template,
             scheduled_at,
+            // This is the HTTP surface, so by definition.
+            origin: mock_resend_core::Origin::Api,
         })
     }
 }
@@ -636,6 +638,7 @@ mod email_response {
                 .single()
                 .expect("a real instant"),
             last_event: EmailEvent::Sent,
+            origin: Default::default(),
             message_id: Some("<id@mock-resend.invalid>".to_owned()),
         }
     }
