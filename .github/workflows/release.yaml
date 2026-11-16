@@ -200,6 +200,10 @@ jobs:
       # Docker Hub shows its own README on the image page, separate from the one on
       # GitHub. Without this step it is blank, which is the first thing anyone sees.
       #
+      # It syncs `DOCKERHUB.md`, not `README.md`. Someone arriving from a registry search
+      # wants to run the image, not read about the crate layout or how to contribute, and
+      # relative links in the repository README resolve to nothing on Docker Hub.
+      #
       # Not allowed to fail the release. By the time it runs the image is already pushed
       # and the index already stitched, so failing here marks a release that shipped as a
       # failure and tells nobody anything useful. It needs a Docker Hub access token with
@@ -212,8 +216,8 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ${{ env.DOCKERHUB_IMAGE }}
-          short-description: "A Resend-compatible email API for local development and testing."
-          readme-filepath: ./README.md
+          short-description: "Resend-compatible email API for local dev and CI. Captures mail, fires signed webhooks."
+          readme-filepath: ./DOCKERHUB.md
 
   release:
     name: Draft the release
