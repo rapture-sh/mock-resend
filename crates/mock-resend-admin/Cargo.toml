@@ -13,6 +13,7 @@ mock-resend-core.workspace = true
 
 axum.workspace = true
 chrono.workspace = true
+rust-embed.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true

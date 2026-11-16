@@ -6,10 +6,12 @@
 //! nothing here is rate limited: a suite that has shut itself out still needs a working
 //! way to reset. See `SECURITY.md`.
 //!
-//! The embedded console is a later phase. This is the API it will be built on.
+//! The console is served from here too, under `/_admin/console/`. It is a viewer over
+//! this API and has no privileges of its own.
 
 #![forbid(unsafe_code)]
 
+pub mod console;
 pub mod router;
 pub mod routes;
 pub mod wire;
