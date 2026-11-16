@@ -22,10 +22,13 @@ function InstanceStatus() {
             reachable ? "bg-foreground/70" : "bg-muted-foreground/40",
           )}
         />
+        {/* No version. The admin API reports its own, which is the server's, and that is
+            not the version anyone looking at this cares about — it says nothing about
+            the code under test. The one fact worth the space is the one that surprises
+            people. The engine's clock is on the hover, because it can be hours ahead
+            after `/_admin/clock` and that *does* explain things. */}
         {reachable ? (
           <span className="truncate" title={`Engine time: ${data.now}`}>
-            <span className="font-mono">{data.version}</span>
-            <span className="px-1 text-muted-foreground/40">·</span>
             no mail is delivered
           </span>
         ) : (
