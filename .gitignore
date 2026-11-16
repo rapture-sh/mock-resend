@@ -5,8 +5,10 @@
 
 # console frontend
 /web/node_modules
-/web/dist
 /web/.vite
+# Created by the admin crate's build script, because `rust-embed` resolves the
+# folder at compile time and it is a build artifact.
+/web/dist
 
 # captured mail (--data defaults to ./data outside the container)
 /data
