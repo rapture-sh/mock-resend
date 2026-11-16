@@ -1,18 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <style>
-    .mark { fill: #16161a; }
-    .glyph { fill: #fbfbfd; }
-    .cut { stroke: #16161a; }
-    @media (prefers-color-scheme: dark) {
-      .mark { fill: #f2f2f5; }
-      .glyph { fill: #121216; }
-      .cut { stroke: #f2f2f5; }
-    }
-  </style>
-  <rect class="mark" width="32" height="32" rx="7" />
-  <!-- An envelope: the one thing this captures, and never delivers. Solid rather than
-       outlined because a tab favicon is 16px, where a 2px outline turns to mush. -->
-  <rect class="glyph" x="7" y="10" width="18" height="12" rx="2.5" />
-  <path class="cut" d="M8.6 12.2 16 17.6 23.4 12.2" fill="none" stroke-width="2.2"
-        stroke-linecap="round" stroke-linejoin="round" />
+  <!-- White either way, so no `prefers-color-scheme` here: a fixed white tile reads on
+       a light tab bar and a dark one, and inverting it would stop it being white. -->
+  <rect width="32" height="32" rx="7" fill="#ffffff" />
+
+  <!-- Lucide's `mail`, unchanged, translated to centre its 20x16 body in the 32x32
+       tile. Not scaled: at 16px a favicon renders this stroke as one crisp pixel, and
+       scaling it up would land the strokes between pixels instead. -->
+  <g transform="translate(4 4)" fill="none" stroke="#16161a" stroke-width="2"
+     stroke-linecap="round" stroke-linejoin="round">
+    <path d="m22 7-8.991 5.727a2 2 0 0 1-2.009 0L2 7" />
+    <rect x="2" y="4" width="20" height="16" rx="2" />
+  </g>
 </svg>
