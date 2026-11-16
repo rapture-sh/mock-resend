@@ -1,0 +1,29 @@
+# Drop this service into a project's compose file to give its tests an email endpoint.
+#
+#   docker compose up              pull and run the published image
+#   docker compose up --build      build this checkout instead
+#
+# The Resend API is on 9100 — which also serves the admin API and the console — and SMTP
+# is on 1025. Captured mail lives in the named volume, so it survives a restart and the
+# `.eml` files can be opened from the host.
+
+services:
+  mock-resend:
+    image: raptureoss/mock-resend:latest
+    build: .
+    ports:
+      - "9100:9100"
+      - "1025:1025"
+    volumes:
+      - mock-resend-data:/data
+    environment:
+      MOCK_RESEND_LOG: info
+      # Off by default, both of them. A suite that trips a rate limit it did not ask for
+      # is a flaky suite, and a message that delivers itself can race a test that only
+      # wanted to check it was accepted.
+      # MOCK_RESEND_RATE_LIMIT: "10"
+      # MOCK_RESEND_DELIVERY_DELAY: "500"
+    restart: unless-stopped
+
+volumes:
+  mock-resend-data:
