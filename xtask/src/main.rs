@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-const IMAGE: &str = "raptureoss/mock-resend";
+const IMAGE: &str = "rapturedotsh/mock-resend";
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1);

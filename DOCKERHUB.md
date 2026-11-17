@@ -21,7 +21,7 @@ place.
 ## Quick start
 
 ```bash
-docker run --rm -p 9100:9100 -p 1025:1025 -v mock-resend-data:/data raptureoss/mock-resend
+docker run --rm -p 9100:9100 -p 1025:1025 -v mock-resend-data:/data rapturedotsh/mock-resend
 ```
 
 Resend API, admin API and console on `:9100`. SMTP on `:1025`. Captured mail lives in the
@@ -71,7 +71,7 @@ curl -X POST http://localhost:9100/emails \
   -d '{"from":"a@example.com","to":"b@example.org","subject":"hi","text":"hello"}'
 ```
 
-[rapture-sh/mailer](https://github.com/rapture-sh/mailer) is the TypeScript client we pair
+[rapturedotsh/mailer](https://github.com/rapturedotsh/mailer) is the TypeScript client we pair
 with this — Resend in production, mock-resend everywhere else, by swapping the base URL.
 mock-resend does not depend on it and works with any Resend client.
 
@@ -80,7 +80,7 @@ mock-resend does not depend on it and works with any Resend client.
 ```yaml
 services:
   email:
-    image: raptureoss/mock-resend:1
+    image: rapturedotsh/mock-resend:1
     ports:
       - "9100:9100"
       - "1025:1025"
@@ -237,9 +237,9 @@ that is subtly wrong is worse than no mock, because it makes broken code pass.
 
 ## Links
 
-- Source, full README and issues: [github.com/rapture-sh/mock-resend](https://github.com/rapture-sh/mock-resend)
-- Security policy: [SECURITY.md](https://github.com/rapture-sh/mock-resend/blob/main/SECURITY.md)
-- Licence: [MIT](https://github.com/rapture-sh/mock-resend/blob/main/LICENSE)
+- Source, full README and issues: [github.com/rapturedotsh/mock-resend](https://github.com/rapturedotsh/mock-resend)
+- Security policy: [SECURITY.md](https://github.com/rapturedotsh/mock-resend/blob/main/SECURITY.md)
+- Licence: [MIT](https://github.com/rapturedotsh/mock-resend/blob/main/LICENSE)
 
 Part of [Rapture.sh](https://rapture.sh).
 

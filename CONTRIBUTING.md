@@ -171,15 +171,15 @@ derived from, so a tag that can be rewritten is a version number that cannot be 
 Apply or update either with:
 
 ```bash
-gh api -X POST repos/rapture-sh/mock-resend/rulesets --input .github/rulesets/main.json
+gh api -X POST repos/rapturedotsh/mock-resend/rulesets --input .github/rulesets/main.json
 ```
 
 ```bash
-gh api repos/rapture-sh/mock-resend/rulesets
+gh api repos/rapturedotsh/mock-resend/rulesets
 ```
 
 ```bash
-gh api -X PUT repos/rapture-sh/mock-resend/rulesets/<id> --input .github/rulesets/main.json
+gh api -X PUT repos/rapturedotsh/mock-resend/rulesets/<id> --input .github/rulesets/main.json
 ```
 
 Neither ruleset has a `creation` rule, so the first push that creates `main` is not
@@ -187,7 +187,7 @@ blocked by it. If a later direct push is ever rejected with "Changes must be mad
 a pull request", the bypass is not matching you, and the fix is one call:
 
 ```bash
-gh api -X PUT repos/rapture-sh/mock-resend/rulesets/<id> --input .github/rulesets/main.json -f enforcement=disabled
+gh api -X PUT repos/rapturedotsh/mock-resend/rulesets/<id> --input .github/rulesets/main.json -f enforcement=disabled
 ```
 
 The required checks are named `Rust` and `Console`, which are the job *names* in

@@ -52,7 +52,7 @@ body:
     attributes:
       label: mock-resend version
       description: Image tag, or the commit you built from.
-      placeholder: raptureoss/mock-resend:latest
+      placeholder: rapturedotsh/mock-resend:latest
     validations:
       required: true
 

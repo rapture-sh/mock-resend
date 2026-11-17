@@ -16,7 +16,7 @@ in a container that starts in milliseconds.
 > nothing about it is safe to expose. Bind it to localhost or a container network and keep
 > it there. See [SECURITY.md](SECURITY.md).
 
-It started inside the [Kywi](https://github.com/rapture-sh) monorepo, standing in for
+It started inside the [Kywi](https://github.com/rapturedotsh) monorepo, standing in for
 Resend across that test suite. Other projects needed the same thing, so it was extracted
 here, rebuilt around a standalone engine and extended well past the original — the full
 delivery event lifecycle with real signed webhooks, an SMTP listener sharing one mailbox
@@ -33,7 +33,7 @@ Running it
 ----------
 
 ```bash
-docker run --rm -p 9100:9100 -p 1025:1025 -v mock-resend-data:/data raptureoss/mock-resend:latest
+docker run --rm -p 9100:9100 -p 1025:1025 -v mock-resend-data:/data rapturedotsh/mock-resend:latest
 ```
 
 Resend API on `:9100`, SMTP on `:1025`. Captured mail lives in the volume mounted at
@@ -45,7 +45,7 @@ A [docker-compose.yml](docker-compose.yml) is in the repository, ready to copy:
 ```yaml
 services:
   email:
-    image: raptureoss/mock-resend:latest
+    image: rapturedotsh/mock-resend:latest
     ports:
       - "9100:9100"
       - "1025:1025"
@@ -105,7 +105,7 @@ instead of `https://api.resend.com`; the paths and payloads are identical.
 curl -X POST http://localhost:9100/emails -H "Authorization: Bearer re_test" -H "Content-Type: application/json" -d @email.json
 ```
 
-If you would rather not hand-roll that, [rapture-sh/mailer](https://github.com/rapture-sh/mailer)
+If you would rather not hand-roll that, [rapturedotsh/mailer](https://github.com/rapturedotsh/mailer)
 is the TypeScript client we use on top of this — a typed sending layer that points at
 Resend in production and at mock-resend everywhere else, by swapping the base URL.
 mock-resend does not depend on it and works with any Resend client; it is simply the

@@ -9,7 +9,7 @@
 
 services:
   mock-resend:
-    image: raptureoss/mock-resend:latest
+    image: rapturedotsh/mock-resend:latest
     build: .
     ports:
       - "9100:9100"
