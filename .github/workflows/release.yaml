@@ -197,27 +197,12 @@ jobs:
           grep -q "linux/amd64" /tmp/index.txt
           grep -q "linux/arm64" /tmp/index.txt
 
-      # Docker Hub shows its own README on the image page, separate from the one on
-      # GitHub. Without this step it is blank, which is the first thing anyone sees.
-      #
-      # It syncs `DOCKERHUB.md`, not `README.md`. Someone arriving from a registry search
-      # wants to run the image, not read about the crate layout or how to contribute, and
-      # relative links in the repository README resolve to nothing on Docker Hub.
-      #
-      # Not allowed to fail the release. By the time it runs the image is already pushed
-      # and the index already stitched, so failing here marks a release that shipped as a
-      # failure and tells nobody anything useful. It needs a Docker Hub access token with
-      # `read/write/delete` scope: a narrower one pushes images happily and then returns
-      # `Forbidden` on this one call.
-      - name: Update the Docker Hub description
-        continue-on-error: true
-        uses: peter-evans/dockerhub-description@v5
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-          repository: ${{ env.DOCKERHUB_IMAGE }}
-          short-description: "Resend-compatible email API for local dev and CI. Captures mail, fires signed webhooks."
-          readme-filepath: ./DOCKERHUB.md
+      # The Docker Hub overview and short description are written by hand on Docker Hub,
+      # not synced from this repository. There was a step here that pushed a
+      # `DOCKERHUB.md`, and it is deliberately gone: the page is edited where it is read,
+      # so a release cannot overwrite wording someone typed into the box. The repository
+      # README is written for GitHub and its relative links resolve to nothing there
+      # anyway, so it is not a substitute.
 
   release:
     name: Draft the release

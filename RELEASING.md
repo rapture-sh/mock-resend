@@ -8,12 +8,14 @@ For maintainers. Everything here is driven from a tag; nothing is published by h
 cargo fmt --all --check && cargo clippy --all-targets --all-features -- -D warnings && cargo test --workspace
 ```
 
-Then check the three things CI cannot:
+Then check the four things CI cannot:
 
 - **`README.md` matches reality.** Every row of the supported-surface and configuration
   tables is a claim that the thing works, and a divergence that is still there has to
-  still be listed under Known divergences. The Docker Hub page is this file, so a wrong
-  line here is wrong in the first place anyone looks.
+  still be listed under Known divergences.
+- **The Docker Hub overview still reads true.** It is written by hand on Docker Hub
+  rather than synced from here, so nothing updates it when this repository changes and
+  it is the first thing anyone arriving from a registry search sees.
 - **The version in `Cargo.toml` is the version you are about to tag.** It is a workspace
   field, so every crate moves together.
 - **`cargo xtask docker` builds and the image starts.** CI does this on every pull
@@ -37,9 +39,7 @@ git tag -a v1.0.0 -m "v1.0.0" && git push origin v1.0.0
    it: `1.0.0`, `1.0`, `1` and `latest`, so someone can pin exactly, follow patches,
    follow minors, or just take the newest.
 4. Checks both architectures are actually in the published index.
-5. Updates the Docker Hub description from `README.md`, which is otherwise blank and is
-   the first thing anyone sees.
-6. Opens a draft GitHub release.
+5. Opens a draft GitHub release.
 
 The tags are attached in one step at the end, so there is never a moment where `:latest`
 means one architecture. The release build uses no cache, deliberately: a shared cache is
@@ -50,12 +50,7 @@ The draft is deliberate: write the notes, then publish it. The image is already 
 that point, which is the right order — the notes point at something that exists.
 
 It needs two secrets on the repository, `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`.
-
-**Give that token `read/write/delete` scope.** A narrower one pushes images perfectly
-well and then returns `Forbidden` on the description sync alone, which is a confusing
-way to lose a step at the very end of a release. That step is `continue-on-error`
-precisely because it runs after the image is already published: if it fails, the release
-still shipped, and the description can be pasted into Docker Hub by hand.
+Pushing images needs nothing beyond write scope on the token.
 
 The amd64 build wants the Blacksmith GitHub App installed on the repository. Without it
 that job queues rather than fails, which is a slow way to find out; `release.yaml` says
